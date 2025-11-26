@@ -1,0 +1,76 @@
+{
+  "name": "workbench-desktop",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/workbench-desktop/src",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@nx/vite:build",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "outputPath": "dist/apps/workbench-desktop"
+      },
+      "configurations": {
+        "development": {
+          "mode": "development"
+        },
+        "production": {
+          "mode": "production"
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nx/vite:dev-server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "workbench-desktop:build"
+      },
+      "configurations": {
+        "development": {
+          "buildTarget": "workbench-desktop:build:development",
+          "hmr": true
+        },
+        "production": {
+          "buildTarget": "workbench-desktop:build:production",
+          "hmr": false
+        }
+      }
+    },
+    "build-electron": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "npx esbuild apps/workbench-desktop/src/api/main.ts --bundle --platform=node --target=node20 --outfile=dist/apps/workbench-desktop/main.js --external:electron",
+          "npx esbuild apps/workbench-desktop/src/api/preload.ts --bundle --platform=node --target=node20 --outfile=dist/apps/workbench-desktop/preload.js --external:electron"
+        ],
+        "parallel": true
+      }
+    },
+    "serve-electron": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "nx serve workbench-desktop",
+          "npx wait-on http://localhost:4200 && nx run workbench-desktop:build-electron && electron dist/apps/workbench-desktop/main.js"
+        ],
+        "parallel": true
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/workbench-desktop/**/*.{ts,tsx,js,jsx}"]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{options.reportsDirectory}"],
+      "options": {
+        "reportsDirectory": "../../coverage/apps/workbench-desktop"
+      }
+    }
+  }
+}

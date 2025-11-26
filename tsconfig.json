@@ -1,0 +1,76 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compileOnSave": false,
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/workbench-desktop-e2e"
+    },
+    {
+      "path": "./apps/workbench-desktop"
+    },
+    {
+      "path": "./libs/shared/ui"
+    },
+    {
+      "path": "./libs/shared/layout"
+    },
+    {
+      "path": "./libs/shared/icons"
+    },
+    {
+      "path": "./libs/shared/state"
+    },
+    {
+      "path": "./libs/shared/electron-bridge"
+    },
+    {
+      "path": "./libs/feature-auth"
+    },
+    {
+      "path": "./libs/feature-lobby"
+    },
+    {
+      "path": "./libs/feature-workspace"
+    },
+    {
+      "path": "./libs/feature-agents"
+    },
+    {
+      "path": "./libs/feature-files"
+    },
+    {
+      "path": "./libs/feature-editor"
+    },
+    {
+      "path": "./libs/feature-terminal"
+    },
+    {
+      "path": "./libs/feature-chat"
+    },
+    {
+      "path": "./libs/feature-permissions"
+    },
+    {
+      "path": "./libs/feature-cockpit"
+    },
+    {
+      "path": "./libs/state-workbench"
+    },
+    {
+      "path": "./libs/bounded-contexts"
+    },
+    {
+      "path": "./libs/shared/utils"
+    },
+    {
+      "path": "./libs/shared/llm-provider"
+    },
+    {
+      "path": "./libs/feature-settings"
+    },
+    {
+      "path": "./libs/shared/db"
+    }
+  ]
+}

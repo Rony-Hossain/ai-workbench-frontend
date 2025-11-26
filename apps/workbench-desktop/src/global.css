@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Optional: Scrollbar styling for the whole app */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background-color: #0a0a0a; /* neutral-950 */
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #262626; /* neutral-800 */
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #404040; /* neutral-700 */
+}

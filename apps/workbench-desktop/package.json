@@ -1,0 +1,9 @@
+{
+  "name": "@ai-workbench-frontend/workbench-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "main": "../../dist/apps/workbench-desktop/main.js",
+  "dependencies": {
+    "electron-is-dev": "^3.0.1"
+  }
+}

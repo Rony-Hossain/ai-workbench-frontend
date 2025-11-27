@@ -9,6 +9,7 @@ import {
   type WorkspaceSlice,
 } from './slices/workspace.slice';
 import { createProfileSlice, type ProfileSlice } from './slices/profile.slice';
+import { chatDb } from '@ai-workbench/shared/db';
 import type {
   ChatMessage,
   AgentStatus,
@@ -24,11 +25,10 @@ export interface WorkbenchState
   // Chat State
   chatMessages: ChatMessage[];
   isStreaming: boolean;
+  activeConversationId: string | null;
 
   // Agent State
   agentStatuses: Record<string, AgentStatus>;
-
-  activeConversationId: string | null;
 
   // Graph State
   workflowNodes: AgentGraphNode[];
@@ -39,6 +39,7 @@ export interface WorkbenchState
   activeTaskId: string | null;
 
   // Actions
+  loadSession: (workspacePath: string) => Promise<void>; // <--- Restore this
   addChatMessage: (msg: ChatMessage) => void;
   setStreaming: (streaming: boolean) => void;
   setAgentStatus: (agentId: string, state: AgentStatus['state']) => void;
@@ -58,7 +59,6 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         // --- Main State ---
         chatMessages: [],
         isStreaming: false,
-
         activeConversationId: null,
         setActiveConversationId: (id) => set({ activeConversationId: id }),
 
@@ -111,8 +111,38 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         activeTaskId: null,
 
         // --- Actions ---
-        addChatMessage: (msg) =>
-          set((s) => ({ chatMessages: [...s.chatMessages, msg] })),
+
+        // 1. Load Session from Dexie
+        loadSession: async (workspacePath: string) => {
+          const threads = await chatDb.listByWorkspace(workspacePath);
+          let activeThreadId = threads[0]?.id;
+
+          if (!activeThreadId) {
+            activeThreadId = await chatDb.create(
+              workspacePath,
+              'General Session'
+            );
+          }
+
+          const conversation = await chatDb.get(activeThreadId);
+          const messages = conversation?.messages || [];
+
+          set({
+            activeConversationId: activeThreadId,
+            chatMessages: messages,
+          });
+        },
+
+        addChatMessage: async (msg) => {
+          set((s) => ({ chatMessages: [...s.chatMessages, msg] }));
+
+          // Save to DB
+          const { activeConversationId } = get();
+          if (activeConversationId) {
+            await chatDb.addMessage(activeConversationId, msg);
+          }
+        },
+
         setStreaming: (streaming) => set({ isStreaming: streaming }),
 
         setAgentStatus: (agentId, state) =>
@@ -148,5 +178,4 @@ export const useWorkbenchStore = create<WorkbenchState>()(
   )
 );
 
-// Export the direct hook for non-React usage (Agent Service)
 export const workbenchStore = useWorkbenchStore;

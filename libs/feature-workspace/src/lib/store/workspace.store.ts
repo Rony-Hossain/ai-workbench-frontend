@@ -47,3 +47,5 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     recentPaths: state.recentPaths.filter((p) => p !== path)
   })),
 }));
+
+export const workspaceStore =  useWorkspaceStore;

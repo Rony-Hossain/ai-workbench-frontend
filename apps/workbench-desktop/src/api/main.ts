@@ -3,12 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { readdirSync, statSync } from 'fs';
 import * as os from 'os';
-// 1. Use native child_process
 import { spawn } from 'child_process';
 
 let mainWindow: BrowserWindow | null = null;
-
-// 2. DEFINE THE GLOBAL STORE (This was missing)
 const terminals: Record<string, any> = {};
 
 function createWindow() {
@@ -29,30 +26,31 @@ function createWindow() {
   mainWindow.on('closed', () => (mainWindow = null));
 }
 
-// --- TERMINAL HANDLERS ---
-
+// --- TERMINAL HANDLER (Interactive Fix) ---
 ipcMain.handle('term:create', (_, cwd?: string) => {
   console.log('🔌 Requesting new terminal session...');
 
-  const systemShell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
+  const isWindows = os.platform() === 'win32';
+  const systemShell = isWindows ? 'powershell.exe' : 'bash';
   const targetCwd = cwd || app.getPath('home');
   
-  console.log(`   Target Shell: ${systemShell}`);
-  console.log(`   Target CWD: ${targetCwd}`);
+  // FIX: Add arguments to force interactive mode
+  // -NoExit is crucial: it keeps the shell open so it accepts more commands
+  const shellArgs = isWindows 
+    ? ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass'] 
+    : ['-i', '-l'];
 
   const id = `term-${Date.now()}`;
 
   try {
-    // 3. Spawn Process
-    const child = spawn(systemShell, [], {
+    const child = spawn(systemShell, shellArgs, {
       cwd: targetCwd,
       env: process.env,
-      shell: true,
+      shell: false, // Run executable directly with args
     });
 
-    console.log(`✅ Shell spawned! ID: ${id} (PID: ${child.pid})`);
+    console.log(`✅ Shell spawned! ID: ${id}`);
 
-    // 4. Wire Output
     child.stdout.on('data', (data) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('term:data', { id, data: data.toString() });
@@ -66,24 +64,12 @@ ipcMain.handle('term:create', (_, cwd?: string) => {
     });
 
     child.on('exit', (code) => {
-      console.log(`💀 Shell exited with code: ${code}`);
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('term:data', { 
-          id, 
-          data: `\r\nProcess exited with code ${code}\r\n` 
-        });
+        mainWindow.webContents.send('term:data', { id, data: `\r\nProcess exited with code ${code}\r\n` });
       }
       delete terminals[id];
     });
-    
-    // 5. Force Prompt
-    setTimeout(() => {
-      if (child.stdin.writable) {
-        child.stdin.write(os.platform() === 'win32' ? 'Get-Location\r\n' : 'pwd\r\n');
-      }
-    }, 500);
 
-    // 6. Store Reference
     terminals[id] = child;
     return id;
 
@@ -97,17 +83,12 @@ ipcMain.handle('term:write', (_, { id, data }) => {
   const child = terminals[id];
   if (child) {
     child.stdin.write(data);
-  } else {
-    console.warn(`⚠️ Writing to dead session: ${id}`);
   }
 });
 
-ipcMain.handle('term:resize', () => {
-  // No-op for native spawn
-});
+ipcMain.handle('term:resize', () => {}); // No-op
 
-// --- FILES & APP ---
-
+// --- FILE & APP HANDLERS ---
 const readDirRecursive = (dirPath: string): any => {
   const name = path.basename(dirPath);
   try {

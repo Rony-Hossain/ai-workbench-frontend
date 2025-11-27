@@ -8,10 +8,14 @@ import {
   useWorkspaceStore,
 } from '@ai-workbench/feature-workspace';
 import { Button, ScrollArea } from '@ai-workbench/shared/ui';
+import { workbenchStore } from '@ai-workbench/state-workbench';
 
 export const FilesPaneContainer: React.FC = () => {
   const openFile = useEditorStore((s) => s.openFile);
   const activeTab = useEditorStore((s) => s.activeTab);
+
+  // Get the loadSession action
+  const loadSession = workbenchStore((s) => s.loadSession);
 
   // 2. Connect to Global Persistence Store (instead of local useState)
   const activePath = useWorkspaceStore((s) => s.activePath);
@@ -33,8 +37,16 @@ export const FilesPaneContainer: React.FC = () => {
     const path = await workspaceApi.openDirectory();
     if (path) {
       await openWorkspace(path); // This saves to DB automatically
+      await loadSession(path);
     }
   };
+
+  // Also load session if activePath exists on mount (reloading app)
+  useEffect(() => {
+    if (activePath) {
+      loadSession(activePath);
+    }
+  }, [activePath]);
 
   return (
     <div className="h-full flex flex-col bg-neutral-900/30">

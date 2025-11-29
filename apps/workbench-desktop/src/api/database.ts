@@ -1,0 +1,53 @@
+import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
+import { app } from 'electron';
+import * as path from 'path';
+
+export class DBService {
+  private db: Database.Database;
+
+  constructor() {
+    // In WSL/Linux, userData is usually ~/.config/NameOfApp
+    const dbPath = path.join(app.getPath('userData'), 'workbench.db');
+    console.log('🔌 Database Path:', dbPath);
+
+    this.db = new Database(dbPath);
+    
+    // CRITICAL: Load the Vector Extension
+    try {
+      sqliteVec.load(this.db);
+      console.log('✅ sqlite-vec loaded successfully');
+    } catch (e) {
+      console.error('❌ Failed to load sqlite-vec:', e);
+    }
+    
+    this.init();
+  }
+
+  private init() {
+    this.db.pragma('journal_mode = WAL');
+    
+    // Create tables if they don't exist
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        role TEXT,
+        config TEXT,
+        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+      );
+      
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vec USING vec0(
+        embedding float[768]
+      );
+    `);
+  }
+
+  // Helper to expose the raw DB instance if needed
+  get raw() {
+    return this.db;
+  }
+}
+
+// Export a singleton instance
+export const db = new DBService().raw;

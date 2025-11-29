@@ -71,6 +71,9 @@
     },
     {
       "path": "./libs/shared/db"
+    },
+    {
+      "path": "./libs/shared/client-api"
     }
   ]
 }

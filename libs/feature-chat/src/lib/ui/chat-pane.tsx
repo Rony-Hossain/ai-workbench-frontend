@@ -3,43 +3,57 @@ import { MessageSquare, Loader2, Bot, User, Terminal as TerminalIcon, Send } fro
 import { Button } from '@ai-workbench/shared/ui';
 import { cn } from '@ai-workbench/shared/utils';
 import { useWorkbenchStore } from '@ai-workbench/state-workbench';
-import { agentService } from '@ai-workbench/feature-agents'; 
+// import { agentService } from '@ai-workbench/feature-agents'; // <--- DEPRECATED: We are moving logic to Backend
 import type { ChatMessage } from '@ai-workbench/bounded-contexts';
 import { MarkdownRenderer } from './artifacts/markdown-renderer';
+import { trpc } from '@ai-workbench/shared/client-api'; // <--- NEW BRAIN CONNECTION
 
 export const ChatPane: React.FC = () => {
-  const messages = useWorkbenchStore(s => s.chatMessages);
-  const isStreaming = useWorkbenchStore(s => s.isStreaming);
-  const addMessage = useWorkbenchStore(s => s.addChatMessage);
+  // 1. DATA: Fetch from SQLite Brain (The new Single Source of Truth)
+  const conversationId = 'default-session'; 
+  const { data: dbMessages, refetch } = trpc.getHistory.useQuery({ conversationId });
 
+  // 2. STATE: UI Loading states
+  const isStreaming = useWorkbenchStore(s => s.isStreaming);
   const [input, setInput] = useState('');
   const endRef = useRef<HTMLDivElement | null>(null);
 
+  // 3. SCROLL: Auto-scroll on new messages
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+  }, [dbMessages, isStreaming]);
 
-  const handleSubmit = () => {
+  // 4. MUTATION: Send to DB
+  const sendMessage = trpc.sendMessage.useMutation({
+    onSuccess: () => {
+      refetch(); // Reload history after send
+    }
+  });
+
+  const handleSubmit = async () => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-    
-    // 1. Add User Message
-    addMessage({
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content: trimmed,
-        timestamp: Date.now()
-    });
-    
+    if (!trimmed || isStreaming || sendMessage.isLoading) return;
+
+    // A. Clear UI immediately (Optimistic feel)
     setInput('');
 
-    // 2. Pass to Service (Fire and Forget)
-    agentService.processMessage(trimmed);
+    // B. Write to Database (The Brain)
+    await sendMessage.mutateAsync({
+      conversationId,
+      role: 'user',
+      content: trimmed
+    });
+
+    // TODO: Phase 3 - Trigger the Backend Agent Worker here
+    // agentService.trigger(trimmed); 
   };
 
+  // 5. CASTING: Ensure DB rows match your UI types
+  const messages = (dbMessages || []) as ChatMessage[];
+
   return (
-    // ... (KEEP THE JSX EXACTLY THE SAME AS BEFORE) ...
     <div className="flex flex-col h-full bg-neutral-900/30">
+      {/* HEADER */}
       <div className="h-10 border-b border-neutral-800 flex items-center justify-between px-4 bg-neutral-900/80">
         <span className="text-xs font-semibold flex items-center gap-2 text-neutral-300">
           <MessageSquare className="w-4 h-4 text-primary" />
@@ -53,11 +67,14 @@ export const ChatPane: React.FC = () => {
         )}
       </div>
 
+      {/* MESSAGE LIST */}
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
         {messages.map((msg) => (
-          <ChatMessageBubble key={msg.id} message={msg} />
+          <ChatMessageBubble key={msg.id || Math.random()} message={msg} />
         ))}
-        {isStreaming && (
+        
+        {/* LOADING INDICATOR */}
+        {(isStreaming || sendMessage.isLoading) && (
           <div className="flex gap-3">
             <div className="w-6 h-6 rounded bg-emerald-900/30 text-emerald-500 flex items-center justify-center mt-0.5 animate-pulse">
               <Bot className="w-3 h-3" />
@@ -70,6 +87,7 @@ export const ChatPane: React.FC = () => {
         <div ref={endRef} />
       </div>
 
+      {/* INPUT AREA */}
       <div className="p-3 border-t border-neutral-800 bg-neutral-950">
         <div className="relative">
           <textarea
@@ -91,9 +109,9 @@ export const ChatPane: React.FC = () => {
               input.trim() ? 'text-primary' : 'text-neutral-600'
             )}
             onClick={handleSubmit}
-            disabled={!input.trim() || isStreaming}
+            disabled={!input.trim() || isStreaming || sendMessage.isLoading}
           >
-            <Send className="w-4 h-4" />
+            {sendMessage.isLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Send className="w-4 h-4" />}
           </Button>
         </div>
       </div>
@@ -101,7 +119,7 @@ export const ChatPane: React.FC = () => {
   );
 };
 
-// (Keep ChatMessageBubble component below)
+// ... ChatMessageBubble remains exactly the same ...
 const ChatMessageBubble: React.FC<{ message: ChatMessage }> = ({ message }) => {
   const { role, content } = message;
   const isUser = role === 'user';
@@ -109,7 +127,6 @@ const ChatMessageBubble: React.FC<{ message: ChatMessage }> = ({ message }) => {
 
   return (
     <div className={cn('flex gap-3', isUser ? 'flex-row-reverse' : '')}>
-      {/* Avatar (Unchanged) */}
       <div className={cn(
           'w-6 h-6 rounded flex items-center justify-center shrink-0 mt-0.5',
           isAssistant ? 'bg-emerald-900/30 text-emerald-500' : 
@@ -118,17 +135,13 @@ const ChatMessageBubble: React.FC<{ message: ChatMessage }> = ({ message }) => {
         {isAssistant ? <Bot className="w-3 h-3" /> : isUser ? <User className="w-3 h-3" /> : <TerminalIcon className="w-3 h-3" />}
       </div>
 
-      {/* Content Bubble */}
       <div className={cn(
           'text-xs py-2 px-3 rounded-md max-w-[85%]',
           isUser 
             ? 'bg-blue-500/10 text-blue-100 border border-blue-500/20' 
             : 'bg-neutral-900 border border-neutral-800 text-neutral-300'
         )}>
-        
-        {/* USE RENDERER HERE */}
         <MarkdownRenderer content={content} />
-
       </div>
     </div>
   );

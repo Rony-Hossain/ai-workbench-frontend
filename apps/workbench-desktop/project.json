@@ -42,7 +42,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "npx esbuild apps/workbench-desktop/src/api/main.ts --bundle --platform=node --target=node20 --outfile=dist/apps/workbench-desktop/main.js --external:electron",
+          "npx esbuild apps/workbench-desktop/src/api/main.ts --bundle --platform=node --target=node20 --outfile=dist/apps/workbench-desktop/main.js --external:electron --external:node-pty --external:better-sqlite3 --external:sqlite-vec",
           "npx esbuild apps/workbench-desktop/src/api/preload.ts --bundle --platform=node --target=node20 --outfile=dist/apps/workbench-desktop/preload.js --external:electron"
         ],
         "parallel": true

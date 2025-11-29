@@ -78,6 +78,7 @@ export default defineConfig({
     alias: {
       '@ai-workbench/shared/ui': path.resolve(__dirname, '../../libs/shared/ui/src/index.ts'),
       '@ai-workbench/shared/layout': path.resolve(__dirname, '../../libs/shared/layout/src/index.ts'),
+      '@ai-workbench/shared/client-api': path.resolve(__dirname, '../../libs/shared/client-api/src/index.ts'),
       '@ai-workbench/shared/icons': path.resolve(__dirname, '../../libs/shared/icons/src/index.ts'),
       '@ai-workbench/shared/electron-bridge': path.resolve(__dirname, '../../libs/shared/electron-bridge/src/index.ts'),
       '@ai-workbench/shared/state': path.resolve(__dirname, '../../libs/shared/state/src/index.ts'),

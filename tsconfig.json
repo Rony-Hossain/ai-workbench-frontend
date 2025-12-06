@@ -74,6 +74,12 @@
     },
     {
       "path": "./libs/shared/client-api"
+    },
+    {
+      "path": "./libs/shared/ai-engine"
+    },
+    {
+      "path": "./libs/shared/ai-engine"
     }
   ]
 }

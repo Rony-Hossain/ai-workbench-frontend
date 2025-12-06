@@ -18,14 +18,11 @@ const api = {
     openDirectory: () => ipcRenderer.invoke('dialog:open-directory'),
   },
   terminal: {
-    // FIX 1: Send an object to match main.ts destructuring
     create: (cwd?: string) => ipcRenderer.invoke('term:create', { cwd }),
-
     write: (id: string, data: string) =>
       ipcRenderer.invoke('term:write', { id, data }),
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.invoke('term:resize', { id, cols, rows }),
-
     onData: (callback: (id: string, data: string) => void) => {
       // @ts-ignore - Electron types can be fussy with 'event'
       const subscription = (

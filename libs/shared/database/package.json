@@ -1,0 +1,14 @@
+{
+  "name": "@ai-workbench-frontend/database",
+  "version": "1.0.0",
+  "description": "Database implementation with Drizzle ORM",
+  "dependencies": {
+    "@ai-workbench-frontend/bounded-contexts": "*",
+    "drizzle-orm": "^0.30.0",
+    "better-sqlite3": "^9.4.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.20.0",
+    "@types/better-sqlite3": "^7.6.0"
+  }
+}

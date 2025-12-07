@@ -80,6 +80,9 @@
     },
     {
       "path": "./libs/shared/ai-engine"
+    },
+    {
+      "path": "./libs/shared/trpc-server"
     }
   ]
 }

@@ -4,6 +4,6 @@
   "private": true,
   "main": "../../dist/apps/workbench-desktop/main.js",
   "dependencies": {
-    "electron-is-dev": "^3.0.1"
+   
   }
 }

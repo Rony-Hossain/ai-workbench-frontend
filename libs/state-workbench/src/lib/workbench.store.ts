@@ -9,7 +9,7 @@ import {
   type WorkspaceSlice,
 } from './slices/workspace.slice';
 import { createProfileSlice, type ProfileSlice } from './slices/profile.slice';
-import { chatDb } from '@ai-workbench/shared/db';
+import { chatDb } from '@ai-workbench/shared/database';
 import type {
   ChatMessage,
   AgentStatus,

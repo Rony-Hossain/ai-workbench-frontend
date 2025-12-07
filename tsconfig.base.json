@@ -17,6 +17,11 @@
     "noUnusedLocals": true,
     "strict": true,
     "target": "es2022",
-    "customConditions": ["@ai-workbench-frontend/source"]
+    "baseUrl": ".",
+    "customConditions": ["@ai-workbench-frontend/source"],
+    "paths": {
+      "@ai-workbench-frontend/bounded-contexts": ["libs/shared/bounded-contexts/src/index.ts"],
+      "@ai-workbench-frontend/database": ["libs/shared/database/src/index.ts"]
+    }
   }
 }

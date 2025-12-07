@@ -126,9 +126,13 @@ export default defineConfig({
         __dirname,
         '../../libs/shared/utils/src/index.ts'
       ),
-      '@ai-workbench/shared/db': path.resolve(
+      '@ai-workbench/shared/database': path.resolve(
         __dirname,
-        '../../libs/shared/db/src/index.ts'
+        '../../libs/shared/database/src/index.ts'
+      ),
+      '@ai-workbench/shared/trpc-server': path.resolve(
+        __dirname,
+        '../../libs/shared/trpc-server/src/index.ts'
       ),
       '@ai-workbench/state-workbench': path.resolve(
         __dirname,

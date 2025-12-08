@@ -1,5 +1,6 @@
 export { DatabaseClient, db } from './client';
 export * from './schema';
+export { chatDb, workspaceDb } from './chat-db';
 
 // Repositories
 export { BaseRepository } from './repositories/base.repository';

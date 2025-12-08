@@ -1,4 +1,4 @@
-import { router, publicProcedure, protectedProcedure } from '@ai-workbench/shared/trpc-server';
+import { router, publicProcedure, protectedProcedure } from '../trpc/init';
 import { permissions } from '../db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { RequestPermissionSchema, ResolvePermissionSchema } from '@ai-workbench/bounded-contexts';

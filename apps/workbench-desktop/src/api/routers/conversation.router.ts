@@ -1,12 +1,12 @@
 import { router, publicProcedure, protectedProcedure } from '../trpc/init';
-import { ConversationRepository, MessageRepository } from '@ai-workbench-frontend/database';
-import { AppError } from '@ai-workbench-frontend/trpc-server';
+import { ConversationRepository, MessageRepository } from '@ai-workbench/shared/database';
+import { AppError } from '@ai-workbench/shared/trpc-server';
 import {
   createConversationDto,
   updateConversationDto,
   type Conversation,
   type ConversationWithMessageCount,
-} from '@ai-workbench-frontend/bounded-contexts';
+} from '@ai-workbench/bounded-contexts';
 import { z } from 'zod';
 
 export const conversationRouter = router({

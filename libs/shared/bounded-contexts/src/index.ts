@@ -5,6 +5,8 @@ export * from './common/enums';
 // Provider
 export * from './provider/provider.types';
 export * from './provider/provider.dto';
+export * from './permission/permission.types';
+export * from './permission/permission.dto';
 
 // Agent
 export * from './agent/agent.types';

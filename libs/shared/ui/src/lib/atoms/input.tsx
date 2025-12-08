@@ -1,5 +1,5 @@
 import React from 'react';
-import { cn } from '../../../../utils/src/lib/cn';
+import { cn } from '@ai-workbench/shared/utils';
 
 export const Input = React.forwardRef<
   HTMLInputElement,

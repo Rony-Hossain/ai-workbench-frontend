@@ -2,9 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { exposeElectronTRPC } from 'electron-trpc/main';
 
 // 1. Enable the tRPC Bridge (Crucial for AI/DB)
-process.once('loaded', () => {
-  exposeElectronTRPC();
-});
+// Call immediately so the global is available as soon as the preload runs.
+exposeElectronTRPC();
 
 // 2. Define Manual API (For Terminal & Files)
 const api = {

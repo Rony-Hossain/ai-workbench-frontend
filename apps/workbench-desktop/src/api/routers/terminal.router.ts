@@ -1,4 +1,4 @@
-import { router, publicProcedure } from '@ai-workbench/shared/trpc-server';
+import { router, publicProcedure } from '../trpc/init';
 
 export const terminalRouter = router({
   // TODO: Implement terminal routes

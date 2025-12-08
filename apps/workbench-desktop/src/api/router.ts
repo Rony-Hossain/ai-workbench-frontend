@@ -5,6 +5,9 @@ import { projectRouter } from './routers/project.router';
 import { taskRouter } from './routers/task.router';
 import { conversationRouter } from './routers/conversation.router';
 import { messageRouter } from './routers/message.router';
+import { permissionRouter } from './routers/permission.router';
+import { terminalRouter } from './routers/terminal.router';
+
 
 /**
  * Main application router
@@ -17,10 +20,11 @@ export const appRouter = router({
   task: taskRouter,
   conversation: conversationRouter,
   message: messageRouter,
+  permission: permissionRouter,
+  terminal: terminalRouter,
 });
 
 /**
  * Export type for client-side type safety
  */
 export type AppRouter = typeof appRouter;
-

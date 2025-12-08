@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { router, publicProcedure, protectedProcedure } from '@ai-workbench/shared/trpc-server';
+import { router, publicProcedure, protectedProcedure } from '../trpc/init';
 import { CreateProviderSchema } from '@ai-workbench/bounded-contexts'; // Your Zod schemas
 import { providers } from '../db/schema';
 import { eq } from 'drizzle-orm';

@@ -1,0 +1,3768 @@
+# Comprehensive GBNF Implementation Plan
+## Multi-Agent System with Automated Structured Output Enforcement
+
+---
+
+## Executive Summary
+
+**Objective**: Build a production-grade system where Pydantic models serve as the single source of truth for all agent-to-agent communication, automatically generating and enforcing GBNF grammars to guarantee schema compliance at the LLM generation layer.
+
+**Timeline**: 8-10 weeks for full implementation
+**Team Size**: 2-3 engineers (1 lead, 1-2 supporting)
+**Tech Stack**: Python 3.11+, Pydantic 2.x, LangGraph, LiteLLM, llama.cpp
+
+---
+
+## Phase 0: Project Setup & Architecture Foundation
+**Duration**: Week 1 (5 days)
+**Owner**: Lead Engineer
+
+### 0.1 Repository Structure Setup
+
+```
+project_root/
+├── agents/
+│   ├── __init__.py
+│   ├── schemas.py              # All Pydantic models (SSOT)
+│   ├── refiner.py              # Agent: Task Refinement
+│   ├── executor.py             # Agent: Task Execution
+│   └── coordinator.py          # Agent: Orchestration
+├── gbnf/
+│   ├── __init__.py
+│   ├── generator.py            # Core GBNF generation logic
+│   ├── parser.py               # GBNF parsing utilities
+│   ├── validators.py           # Grammar validation
+│   └── templates/              # GBNF rule templates
+├── gbnf_grammars/              # Generated .gbnf files (git-tracked)
+│   ├── TaskPlan.gbnf
+│   ├── AgentResponse.gbnf
+│   └── ...
+├── tests/
+│   ├── test_gbnf_generation.py
+│   ├── test_schema_consistency.py
+│   └── fixtures/
+├── .githooks/
+│   └── pre-commit               # GBNF validation hook
+├── pyproject.toml
+├── README.md
+└── SCHEMA_CHANGELOG.md          # Track schema evolution
+```
+
+**Deliverables**:
+- [ ] Repository initialized with structure above
+- [ ] `pyproject.toml` configured with dependencies:
+  - `pydantic>=2.5.0`
+  - `langgraph>=0.2.0`
+  - `litellm>=1.40.0`
+  - `pytest>=7.4.0`
+  - `pre-commit>=3.5.0`
+- [ ] Basic CI/CD pipeline (GitHub Actions) configured
+- [ ] Development environment setup guide documented
+
+### 0.2 Core Dependencies & Tooling Research
+
+**Research Tasks** (2 days):
+1. **GBNF Reference Implementation Study**
+   - Analyze llama.cpp grammar format specification
+   - Document supported constructs: alternation, repetition, optionality
+   - Identify limitations (e.g., no lookahead, no recursion depth limits)
+
+2. **Evaluate Existing Solutions**
+   - Test `instructor` library compatibility with llama.cpp backends
+   - Evaluate `pydantic-to-typescript` as reference for type traversal
+   - Research `lark` parser for GBNF syntax validation
+
+3. **LiteLLM Integration Investigation**
+   - Confirm `grammar` parameter support for llama.cpp backends
+   - Test with `together_ai` and local llama.cpp endpoints
+   - Document fallback behavior when grammar unsupported
+
+**Deliverables**:
+- [ ] Technical research document (3-5 pages)
+- [ ] Decision matrix: Build vs. Buy for GBNF generator
+- [ ] API integration test suite for LiteLLM + grammar
+
+### 0.3 Schema Design Workshop
+
+**Objective**: Define all inter-agent communication schemas before writing code
+
+**Workshop Agenda** (1 day collaborative session):
+1. Identify all agent interaction points in your LangGraph
+2. Map data flows between agents
+3. Design Pydantic schemas for each message type
+
+**Example Schemas** (starting point):
+
+```python
+# agents/schemas.py
+from pydantic import BaseModel, Field, conint, constr
+from typing import Literal, Optional, List
+from enum import Enum
+from datetime import datetime
+
+class SchemaVersion(BaseModel):
+    """Metadata for schema evolution tracking."""
+    version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class AgentRole(str, Enum):
+    COORDINATOR = "coordinator"
+    REFINER = "refiner"
+    EXECUTOR = "executor"
+    VALIDATOR = "validator"
+
+class TaskPriority(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class SubTask(BaseModel):
+    """Individual task unit."""
+    id: constr(pattern=r"^task_[a-z0-9]{8}$")
+    description: constr(min_length=10, max_length=500)
+    priority: TaskPriority
+    estimated_duration_minutes: conint(ge=1, le=480)
+    dependencies: List[str] = Field(default_factory=list)
+    assigned_to: Optional[AgentRole] = None
+
+class TaskPlan(BaseModel):
+    """Complete task decomposition from Refiner agent."""
+    __schema_version__: str = "1.0.0"
+    
+    plan_id: constr(pattern=r"^plan_[a-z0-9]{12}$")
+    original_query: str
+    subtasks: List[SubTask] = Field(min_length=1, max_length=20)
+    estimated_total_minutes: conint(ge=1)
+    requires_human_approval: bool = False
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "plan_id": "plan_abc123def456",
+                "original_query": "Build a user authentication system",
+                "subtasks": [
+                    {
+                        "id": "task_a1b2c3d4",
+                        "description": "Design database schema for users",
+                        "priority": "high",
+                        "estimated_duration_minutes": 30,
+                        "dependencies": [],
+                        "assigned_to": "executor"
+                    }
+                ],
+                "estimated_total_minutes": 120,
+                "requires_human_approval": False
+            }
+        }
+
+class ExecutionStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+class TaskResult(BaseModel):
+    """Execution result from Executor agent."""
+    __schema_version__: str = "1.0.0"
+    
+    task_id: str
+    status: ExecutionStatus
+    output: Optional[str] = Field(default=None, max_length=2000)
+    error_message: Optional[str] = None
+    artifacts: List[str] = Field(default_factory=list)
+    next_action: Literal["continue", "retry", "escalate", "complete"]
+
+class AgentMessage(BaseModel):
+    """Generic message wrapper for all agent communications."""
+    __schema_version__: str = "1.0.0"
+    
+    sender: AgentRole
+    recipient: AgentRole
+    message_type: Literal["task_plan", "execution_result", "status_update", "error"]
+    payload: dict  # Will be validated against specific schema
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+```
+
+**Deliverables**:
+- [ ] Complete `agents/schemas.py` with all communication schemas
+- [ ] Schema documentation with example JSON instances
+- [ ] Schema dependency graph diagram
+- [ ] `SCHEMA_CHANGELOG.md` initialized
+
+---
+
+## Phase 1: Core GBNF Generator Implementation
+**Duration**: Weeks 2-3 (10 days)
+**Owner**: Lead Engineer
+
+### 1.1 Basic Type Mapping Engine
+
+**Objective**: Translate Pydantic primitive types to GBNF rules
+
+**Implementation Steps**:
+
+1. **Create Type Registry** (Day 1-2)
+
+```python
+# gbnf/generator.py
+from typing import Type, get_origin, get_args, Any
+from pydantic import BaseModel
+from pydantic.fields import FieldInfo
+
+class GBNFTypeMapper:
+    """Maps Python/Pydantic types to GBNF grammar rules."""
+    
+    def __init__(self):
+        self.rules: dict[str, str] = {}
+        self.rule_counter = 0
+        
+    def map_type(self, field_name: str, type_hint: Type, field_info: FieldInfo) -> str:
+        """
+        Convert a Pydantic field type to a GBNF rule.
+        Returns the rule name.
+        """
+        # Handle primitive types
+        if type_hint == str:
+            return self._map_string(field_name, field_info)
+        elif type_hint == int:
+            return self._map_integer(field_name, field_info)
+        elif type_hint == float:
+            return self._map_float(field_name, field_info)
+        elif type_hint == bool:
+            return self._map_boolean(field_name)
+        
+        # Handle container types
+        origin = get_origin(type_hint)
+        if origin is list:
+            return self._map_list(field_name, type_hint, field_info)
+        elif origin is dict:
+            return self._map_dict(field_name, type_hint)
+        
+        # Handle Optional (Union with None)
+        if origin is Union:
+            return self._map_optional(field_name, type_hint, field_info)
+        
+        # Handle nested Pydantic models
+        if isinstance(type_hint, type) and issubclass(type_hint, BaseModel):
+            return self._map_nested_model(field_name, type_hint)
+        
+        raise NotImplementedError(f"Type {type_hint} not supported for GBNF generation")
+    
+    def _map_string(self, field_name: str, field_info: FieldInfo) -> str:
+        """Generate GBNF rule for string field."""
+        rule_name = f"{field_name}-string"
+        
+        # Check for pattern constraint
+        if hasattr(field_info, 'pattern') and field_info.pattern:
+            # Convert regex to GBNF (limited support)
+            self.rules[rule_name] = self._regex_to_gbnf(field_info.pattern)
+        else:
+            # Default: any string (JSON escaped)
+            self.rules[rule_name] = r'"\"" [^"\]* "\""'
+        
+        return rule_name
+    
+    def _map_integer(self, field_name: str, field_info: FieldInfo) -> str:
+        """Generate GBNF rule for integer field."""
+        rule_name = f"{field_name}-int"
+        
+        # Check for constraints (ge, le, gt, lt)
+        constraints = self._extract_constraints(field_info)
+        
+        if constraints:
+            # Generate constrained integer rule
+            self.rules[rule_name] = self._constrained_integer_rule(constraints)
+        else:
+            # Default: any integer
+            self.rules[rule_name] = '"-"? [0-9]+'
+        
+        return rule_name
+    
+    # ... (more type mappers)
+```
+
+**Test Cases**:
+```python
+# tests/test_gbnf_generation.py
+def test_string_mapping():
+    mapper = GBNFTypeMapper()
+    
+    class TestModel(BaseModel):
+        name: str
+    
+    rule = mapper.map_type("name", str, TestModel.model_fields["name"])
+    assert rule in mapper.rules
+    assert '"' in mapper.rules[rule]  # Should have JSON string quotes
+
+def test_constrained_int_mapping():
+    mapper = GBNFTypeMapper()
+    
+    class TestModel(BaseModel):
+        priority: conint(ge=1, le=5)
+    
+    rule = mapper.map_type("priority", int, TestModel.model_fields["priority"])
+    # Should generate rule that only accepts 1-5
+    assert mapper.rules[rule] == '"1" | "2" | "3" | "4" | "5"'
+```
+
+**Deliverables**:
+- [ ] `GBNFTypeMapper` class with primitive type support
+- [ ] Unit tests for each type mapper (>90% coverage)
+- [ ] Documentation of supported Pydantic constraints
+
+### 1.2 Composite Type Support
+
+**Objective**: Handle Lists, Dicts, Optional, and nested models
+
+**Implementation**: (Days 3-5)
+
+```python
+class GBNFGenerator:
+    """Main generator orchestrating type mapping and rule composition."""
+    
+    def __init__(self):
+        self.mapper = GBNFTypeMapper()
+        self.generated_models: set[str] = set()  # Prevent duplicate rules
+    
+    def from_pydantic(self, model: Type[BaseModel], root_name: str = "root") -> str:
+        """
+        Generate complete GBNF grammar from Pydantic model.
+        Returns grammar string ready for llama.cpp.
+        """
+        self.mapper.rules.clear()
+        self.generated_models.clear()
+        
+        # Generate root object rule
+        root_rule = self._generate_object_rule(root_name, model)
+        
+        # Compile all rules into GBNF format
+        grammar = self._compile_grammar(root_rule)
+        
+        return grammar
+    
+    def _generate_object_rule(self, name: str, model: Type[BaseModel]) -> str:
+        """Generate GBNF rule for a Pydantic model (JSON object)."""
+        if name in self.generated_models:
+            return name  # Already generated, avoid infinite recursion
+        
+        self.generated_models.add(name)
+        rule_name = f"{name}-object"
+        
+        fields_rules = []
+        for field_name, field_info in model.model_fields.items():
+            type_hint = field_info.annotation
+            
+            # Generate rule for this field
+            field_type_rule = self.mapper.map_type(field_name, type_hint, field_info)
+            
+            # Create key-value pair rule
+            field_rule = f'"\\"" "{field_name}" "\\"" ":" {field_type_rule}'
+            
+            # Handle optional fields
+            if not field_info.is_required():
+                field_rule = f"({field_rule})?"
+            
+            fields_rules.append(field_rule)
+        
+        # Combine fields with commas
+        fields_combined = ' "," '.join(fields_rules)
+        
+        # Create object rule: { field1: value1, field2: value2 }
+        self.mapper.rules[rule_name] = f'"{{" {fields_combined} "}}"'
+        
+        return rule_name
+    
+    def _generate_list_rule(self, name: str, item_type: Type) -> str:
+        """Generate GBNF rule for JSON array."""
+        rule_name = f"{name}-array"
+        
+        # Generate rule for array items
+        item_rule = self.mapper.map_type(f"{name}_item", item_type, FieldInfo())
+        
+        # Array rule: [ item1, item2, ... ] with optional trailing comma
+        self.mapper.rules[rule_name] = f'"[" {item_rule} ("," {item_rule})* "]"'
+        
+        return rule_name
+    
+    def _compile_grammar(self, root_rule: str) -> str:
+        """Compile all rules into final GBNF grammar string."""
+        lines = [f"root ::= {self.mapper.rules[root_rule]}"]
+        
+        # Add all supporting rules
+        for rule_name, rule_def in self.mapper.rules.items():
+            if rule_name != root_rule:
+                lines.append(f"{rule_name} ::= {rule_def}")
+        
+        return "\n".join(lines)
+```
+
+**Key Challenges & Solutions**:
+
+| Challenge | Solution |
+|-----------|----------|
+| Recursive models (self-referencing) | Track generated models in set, reference by name instead of regenerating |
+| Optional fields in JSON | Use `(rule)?` for optional, adjust comma logic |
+| Whitespace in JSON | Add explicit whitespace rules: `ws ::= [ \t\n]*` |
+| Enum/Literal types | Generate alternation: `"option1" \| "option2" \| "option3"` |
+
+**Deliverables**:
+- [ ] `GBNFGenerator` class with composite type support
+- [ ] Test suite with nested model examples
+- [ ] Handling of at least 3 levels of nesting
+- [ ] Documentation of recursion limits
+
+### 1.3 Advanced Type Support
+
+**Objective**: Support Enums, Literals, Union types, and Pydantic validators
+
+**Implementation**: (Days 6-8)
+
+**Priority Features**:
+
+1. **Enum/Literal Support** (CRITICAL for agent state machines)
+```python
+def _map_enum(self, field_name: str, enum_class: Type[Enum]) -> str:
+    """Map Python Enum to GBNF alternation."""
+    rule_name = f"{field_name}-enum"
+    
+    options = [f'"\\"" "{member.value}" "\\""' for member in enum_class]
+    self.mapper.rules[rule_name] = " | ".join(options)
+    
+    return rule_name
+
+# Test
+class Priority(str, Enum):
+    LOW = "low"
+    HIGH = "high"
+
+# Should generate:
+# priority-enum ::= "\"low\"" | "\"high\""
+```
+
+2. **Pattern-Constrained Strings**
+```python
+def _regex_to_gbnf(self, pattern: str) -> str:
+    """
+    Convert limited subset of regex to GBNF.
+    Supports: character classes, quantifiers, alternation.
+    """
+    # Example: r"^task_[a-z0-9]{8}$" 
+    # becomes: '"task_" [a-z0-9] [a-z0-9] [a-z0-9] ...'
+    
+    # Use `re` module to parse pattern
+    # Generate GBNF equivalent
+    # Raise NotImplementedError for unsupported regex features
+```
+
+3. **Numeric Constraints**
+```python
+def _constrained_integer_rule(self, constraints: dict) -> str:
+    """
+    Generate rule for constrained integers.
+    Example: conint(ge=1, le=100) -> "1" | "2" | ... | "100"
+    Warning: Only practical for small ranges!
+    """
+    ge = constraints.get('ge', float('-inf'))
+    le = constraints.get('le', float('inf'))
+    
+    if le - ge > 100:
+        # Too large to enumerate, use pattern matching
+        return self._range_pattern(ge, le)
+    else:
+        # Small range, enumerate all values
+        return " | ".join(f'"{i}"' for i in range(ge, le + 1))
+```
+
+**Deliverables**:
+- [ ] Enum/Literal support (100% required)
+- [ ] Pattern string support (regex subset documented)
+- [ ] Numeric constraint support (with range limits)
+- [ ] Test cases for all advanced types
+
+### 1.4 Grammar Optimization & Validation
+
+**Objective**: Ensure generated grammars are efficient and valid
+
+**Implementation**: (Days 9-10)
+
+**Tasks**:
+
+1. **Rule Deduplication**
+   - Detect identical rules and reuse them
+   - Reduce grammar size by 30-50%
+
+2. **Syntax Validation**
+   - Parse generated grammar with GBNF parser
+   - Catch malformed rules before deployment
+
+3. **Performance Profiling**
+   - Measure generation time for complex schemas
+   - Optimize hot paths (e.g., nested model traversal)
+
+**Validation Test**:
+```python
+def test_grammar_is_parseable():
+    """Ensure generated grammar is valid GBNF syntax."""
+    from gbnf.parser import GBNFParser
+    
+    class ComplexModel(BaseModel):
+        nested: List[Dict[str, Optional[int]]]
+    
+    generator = GBNFGenerator()
+    grammar = generator.from_pydantic(ComplexModel)
+    
+    parser = GBNFParser()
+    assert parser.validate(grammar), "Generated grammar is invalid!"
+```
+
+**Deliverables**:
+- [ ] Grammar optimizer module
+- [ ] GBNF syntax validator (using `lark` or custom parser)
+- [ ] Performance benchmarks (<100ms for typical schemas)
+
+---
+
+## Phase 2: LiteLLM Integration & Runtime Enforcement
+**Duration**: Week 4 (5 days)
+**Owner**: Supporting Engineer
+
+### 2.1 LiteLLM Wrapper with Grammar Support
+
+**Objective**: Create abstraction layer that automatically injects GBNF grammars
+
+**Implementation**:
+
+```python
+# agents/llm_client.py
+from typing import Type, Optional, List, Dict, Any
+from pydantic import BaseModel
+import litellm
+from gbnf.generator import GBNFGenerator
+
+class StructuredLLMClient:
+    """
+    LiteLLM wrapper that enforces structured outputs via GBNF.
+    """
+    
+    def __init__(self, model: str = "together_ai/meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo"):
+        self.model = model
+        self.generator = GBNFGenerator()
+        self.grammar_cache: Dict[str, str] = {}  # Cache compiled grammars
+    
+    def generate_structured(
+        self,
+        messages: List[Dict[str, str]],
+        response_model: Type[BaseModel],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs
+    ) -> BaseModel:
+        """
+        Generate LLM response constrained to match response_model schema.
+        
+        Args:
+            messages: Chat messages in OpenAI format
+            response_model: Pydantic model defining expected output
+            temperature: Sampling temperature
+            max_tokens: Maximum response length
+        
+        Returns:
+            Validated instance of response_model
+        
+        Raises:
+            ValidationError: If LLM output doesn't match schema (shouldn't happen with GBNF)
+            LLMError: If generation fails
+        """
+        # Generate or retrieve cached grammar
+        model_name = response_model.__name__
+        if model_name not in self.grammar_cache:
+            grammar = self.generator.from_pydantic(response_model)
+            self.grammar_cache[model_name] = grammar
+        else:
+            grammar = self.grammar_cache[model_name]
+        
+        # Make LiteLLM call with grammar constraint
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                grammar=grammar,  # Key parameter
+                **kwargs
+            )
+            
+            # Extract JSON from response
+            response_text = response.choices[0].message.content
+            
+            # Validate with Pydantic (should always pass with GBNF)
+            validated = response_model.model_validate_json(response_text)
+            
+            return validated
+            
+        except litellm.exceptions.BadRequestError as e:
+            if "grammar" in str(e).lower():
+                # Grammar not supported by this backend, fall back
+                return self._fallback_generation(messages, response_model, temperature, max_tokens)
+            raise
+        
+        except Exception as e:
+            raise LLMError(f"Structured generation failed: {e}") from e
+    
+    def _fallback_generation(
+        self,
+        messages: List[Dict[str, str]],
+        response_model: Type[BaseModel],
+        temperature: float,
+        max_tokens: int
+    ) -> BaseModel:
+        """
+        Fallback when GBNF not supported: use prompting + validation + retry.
+        """
+        # Add schema to system prompt
+        schema_json = response_model.model_json_schema()
+        messages_with_schema = messages.copy()
+        messages_with_schema[0]["content"] += f"\n\nRespond with valid JSON matching this schema:\n{schema_json}"
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            response = litellm.completion(
+                model=self.model,
+                messages=messages_with_schema,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            response_text = response.choices[0].message.content
+            
+            try:
+                # Try to extract JSON (might be wrapped in markdown)
+                json_str = self._extract_json(response_text)
+                validated = response_model.model_validate_json(json_str)
+                return validated
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise ValidationError(f"Failed to get valid response after {max_retries} attempts: {e}")
+                # Retry with error feedback
+                messages_with_schema.append({
+                    "role": "assistant",
+                    "content": response_text
+                })
+                messages_with_schema.append({
+                    "role": "user",
+                    "content": f"Error: {e}. Please provide valid JSON matching the schema."
+                })
+        
+    def _extract_json(self, text: str) -> str:
+        """Extract JSON from markdown code blocks or raw text."""
+        import re
+        
+        # Try to find JSON in markdown code block
+        json_match = re.search(r'```(?:json)?\n(.*?)\n```', text, re.DOTALL)
+        if json_match:
+            return json_match.group(1)
+        
+        # Try to find JSON object
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            return json_match.group(0)
+        
+        # Return as-is and hope for the best
+        return text
+```
+
+**Key Features**:
+- Grammar caching (avoid regenerating for same model)
+- Automatic fallback to prompt-based structured output
+- Retry logic with error feedback
+- JSON extraction from markdown/mixed content
+
+**Deliverables**:
+- [ ] `StructuredLLMClient` implementation
+- [ ] Integration tests with live LLM endpoints
+- [ ] Performance comparison: GBNF vs. fallback
+- [ ] Documentation of supported backends
+
+### 2.2 LangGraph Integration
+
+**Objective**: Wire `StructuredLLMClient` into agent nodes
+
+**Example Integration**:
+
+```python
+# agents/refiner.py
+from langgraph.graph import StateGraph
+from agents.schemas import TaskPlan, AgentMessage
+from agents.llm_client import StructuredLLMClient
+
+class RefinerAgent:
+    """Agent that decomposes user queries into structured task plans."""
+    
+    def __init__(self):
+        self.llm = StructuredLLMClient()
+    
+    def refine_task(self, state: dict) -> dict:
+        """
+        LangGraph node: Refine user query into TaskPlan.
+        """
+        user_query = state["user_query"]
+        
+        messages = [
+            {"role": "system", "content": "You are a task planning expert. Break down user queries into structured subtasks."},
+            {"role": "user", "content": f"Create a detailed task plan for: {user_query}"}
+        ]
+        
+        # This is where GBNF magic happens
+        task_plan: TaskPlan = self.llm.generate_structured(
+            messages=messages,
+            response_model=TaskPlan,
+            temperature=0.3  # Lower temp for structured output
+        )
+        
+        # Update state with validated plan
+        state["task_plan"] = task_plan.model_dump()
+        state["plan_id"] = task_plan.plan_id
+        
+        return state
+
+# Build LangGraph
+def create_agent_graph():
+    workflow = StateGraph(dict)
+    
+    refiner = RefinerAgent()
+    workflow.add_node("refiner", refiner.refine_task)
+    
+    # ... add other nodes
+    
+    return workflow.compile()
+```
+
+**Testing Strategy**:
+```python
+def test_refiner_output_structure():
+    """Ensure Refiner always returns valid TaskPlan."""
+    refiner = RefinerAgent()
+    
+    test_queries = [
+        "Build a web scraper for news articles",
+        "Create a machine learning model for sentiment analysis",
+        "Set up CI/CD pipeline for Python project"
+    ]
+    
+    for query in test_queries:
+        state = {"user_query": query}
+        result = refiner.refine_task(state)
+        
+        # Validate structure
+        assert "task_plan" in result
+        plan = TaskPlan.model_validate(result["task_plan"])
+        
+        # Validate content
+        assert len(plan.subtasks) > 0
+        assert plan.plan_id.startswith("plan_")
+        assert all(st.priority in TaskPriority for st in plan.subtasks)
+```
+
+**Deliverables**:
+- [ ] All agent nodes updated to use `StructuredLLMClient`
+- [ ] Integration tests for each agent
+- [ ] End-to-end test of full LangGraph workflow
+- [ ] Performance metrics (latency, token usage)
+
+### 2.3 Error Handling & Observability
+
+**Objective**: Robust error handling and logging for debugging
+
+**Implementation**:
+
+```python
+# agents/observability.py
+import structlog
+from typing import Type
+from pydantic import BaseModel, ValidationError
+import json
+
+logger = structlog.get_logger()
+
+class GBNFInstrumentation:
+    """Logging and metrics for GBNF-enforced generation."""
+    
+    @staticmethod
+    def log_generation_attempt(
+        agent_name: str,
+        response_model: Type[BaseModel],
+        messages: list,
+        grammar_used: bool
+    ):
+        logger.info(
+            "llm_generation_start",
+            agent=agent_name,
+            schema=response_model.__name__,
+            schema_version=getattr(response_model, '__schema_version__', 'unknown'),
+            grammar_enforced=grammar_used,
+            prompt_tokens=sum(len(m["content"]) for m in messages) // 4  # Rough estimate
+        )
+    
+    @staticmethod
+    def log_validation_success(
+        agent_name: str,
+        response_model: Type[BaseModel],
+        parsed_object: BaseModel
+    ):
+        logger.info(
+            "schema_validation_success",
+            agent=agent_name,
+            schema=response_model.__name__,
+            object_summary=json.dumps(parsed_object.model_dump(), indent=2)[:200]
+        )
+    
+    @staticmethod
+    def log_validation_failure(
+        agent_name: str,
+        response_model: Type[BaseModel],
+        raw_response: str,
+        error: ValidationError
+    ):
+        logger.error(
+            "schema_validation_failed",
+            agent=agent_name,
+            schema=response_model.__name__,
+            raw_response=raw_response[:500],
+            validation_errors=error.errors(),
+            error_count=error.error_count()
+        )
+
+# Integrate into StructuredLLMClient
+class StructuredLLMClient:
+    def generate_structured(self, ...):
+        GBNFInstrumentation.log_generation_attempt(
+            agent_name=self._get_caller_agent(),
+            response_model=response_model,
+            messages=messages,
+            grammar_used=True
+        )
+        
+        try:
+            # ... generation logic
+            GBNFInstrumentation.log_validation_success(...)
+        except ValidationError as e:
+            GBNFInstrumentation.log_validation_failure(...)
+            raise
+```
+
+**Deliverables**:
+- [ ] Structured logging for all LLM calls
+- [ ] Metrics dashboard (Prometheus + Grafana suggested)
+- [ ] Alert system for validation failures (>5% failure rate)
+- [ ] Debug mode with full grammar/response dumps
+
+---
+
+## Phase 3: Schema Evolution & Version Management
+**Duration**: Week 5 (5 days)
+**Owner**: Lead Engineer
+
+### 3.1 Schema Versioning System
+
+**Objective**: Enable safe schema evolution without breaking existing agents
+
+**Implementation**:
+
+```python
+# agents/schema_registry.py
+from typing import Type, Dict, Optional
+from pydantic import BaseModel
+from packaging import version
+import importlib
+
+class SchemaRegistry:
+    """Central registry for all schema versions."""
+    
+    def __init__(self):
+        self._schemas: Dict[str, Dict[str, Type[BaseModel]]] = {}
+        # Format: {"TaskPlan": {"1.0.0": TaskPlanV1, "2.0.0": TaskPlanV2}}
+    
+    def register(self, schema_class: Type[BaseModel]):
+        """Register a schema version."""
+        schema_name = schema_class.__name__.replace("V1", "").replace("V2", "")
+        schema_version = getattr(schema_class, '__schema_version__', '1.0.0')
+        
+        if schema_name not in self._schemas:
+            self._schemas[schema_name] = {}
+        
+        self._schemas[schema_name][schema_version] = schema_class
+    
+    def get_schema(self, name: str, ver: str) -> Type[BaseModel]:
+        """Retrieve specific schema version."""
+        if name not in self._schemas:
+            raise ValueError(f"Schema {name} not registered")
+        
+        if ver not in self._schemas[name]:
+            # Try to find compatible version
+            return self._find_compatible_version(name, ver)
+        
+        return self._schemas[name][ver]
+    
+    def get_latest(self, name: str) -> Type[BaseModel]:
+        """Get latest version of a schema."""
+        if name not in self._schemas:
+            raise ValueError(f"Schema {name} not registered")
+        
+        versions = sorted(
+            self._schemas[name].keys(),
+            key=lambda v: version.parse(v),
+            reverse=True
+        )
+        
+        return self._schemas[name][versions[0]]
+    
+    def _find_compatible_version(self, name: str, requested_ver: str) -> Type[BaseModel]:
+        """
+        Find compatible schema version using semver rules.
+        Major version must match, minor version can be equal or higher.
+        """
+        requested = version.parse(requested_ver)
+        available = [version.parse(v) for v in self._schemas[name].keys()]
+        
+        compatible = [
+            v for v in available
+            if v.major == requested.major and v >= requested
+        ]
+        
+        if not compatible:
+            raise ValueError(
+                f"No compatible version found for {name} {requested_ver}. "
+                f"Available: {list(self._schemas[name].keys())}"
+            )
+        
+        compatible_ver = str(min(compatible))
+        return self._schemas[name][compatible_ver]
+
+# Global registry instance
+registry = SchemaRegistry()
+
+# Auto-register all schemas on import
+def auto_register_schemas():
+    """Scan agents.schemas module and register all models."""
+    import agents.schemas as schemas_module
+    
+    for attr_name in dir(schemas_module):
+        attr = getattr(schemas_module, attr_name)
+        if (isinstance(attr, type) and 
+            issubclass(attr, BaseModel) and 
+            attr is not BaseModel):
+            registry.register(attr)
+
+auto_register_schemas()
+```
+
+**Schema Migration Example**:
+
+```python
+# agents/schemas.py
+
+# Version 1.0.0 (original)
+class TaskPlanV1(BaseModel):
+    __schema_version__: str = "1.0.0"
+    plan_id: str
+    subtasks: List[SubTask]
+
+# Version 2.0.0 (breaking change: added required field)
+class TaskPlanV2(BaseModel):
+    __schema_version__: str = "2.0.0"
+    plan_id: str
+    subtasks: List[SubTask]
+    risk_assessment: str  # New required field
+    
+    @classmethod
+    def from_v1(cls, v1_data: dict) -> "TaskPlanV2":
+        """Migrate V1 data to V2."""
+        return cls(
+            plan_id=v1_data["plan_id"],
+            subtasks=v1_data["subtasks"],
+            risk_assessment="Not assessed (migrated from V1)"
+        )
+
+# Version 2.1.0 (backward compatible: optional field)
+class TaskPlanV2_1(BaseModel):
+    __schema_version__: str = "2.1.0"
+    plan_id: str
+    subtasks: List[SubTask]
+    risk_assessment: str
+    compliance_notes: Optional[str] = None  # New optional field
+
+# Use latest by default
+TaskPlan = TaskPlanV2_1
+```
+
+**Deliverables**:
+- [ ] `SchemaRegistry` implementation
+- [ ] Migration utilities for each schema version
+- [ ] Version compatibility matrix documentation
+- [ ] Automated tests for cross-version compatibility
+
+### 3.2 Schema Change Detection
+
+**Objective**: Prevent accidental breaking changes
+
+**Implementation**:
+
+```python
+# gbnf/schema_differ.py
+from typing import Type, List, Tuple
+from pydantic import BaseModel
+from pydantic.fields import FieldInfo
+
+class SchemaDiff:
+    """Detect differences between schema versions."""
+    
+    @staticmethod
+    def compare(
+        old_schema: Type[BaseModel],
+        new_schema: Type[BaseModel]
+    ) -> Tuple[List[str], List[str], List[str]]:
+        """
+        Compare two schemas and return:
+        - Added fields
+        - Removed fields  
+        - Modified fields
+        """
+        old_fields = set(old_schema.model_fields.keys())
+        new_fields = set(new_schema.model_fields.keys())
+        
+        added = list(new_fields - old_fields)
+        removed = list(old_fields - new_fields)
+        
+        modified = []
+        for field_name in old_fields & new_fields:
+            old_info = old_schema.model_fields[field_name]
+            new_info = new_schema.model_fields[field_name]
+            
+            if old_info.annotation != new_info.annotation:
+                modified.append(f"{field_name}: {old_info.annotation} -> {new_info.annotation}")
+            
+            if old_info.is_required() != new_info.is_required():
+                modified.append(f"{field_name}: required changed")
+        
+        return added, removed, modified
+    
+    @staticmethod
+    def is_breaking_change(
+        old_schema: Type[BaseModel],
+        new_schema: Type[BaseModel]
+    ) -> bool:
+        """
+        Determine if schema change is breaking:
+        - Removed required fields
+        - Changed field types
+        - Made optional field required
+        """
+        added, removed, modified = SchemaDiff.compare(old_schema, new_schema)
+        
+        # Removed fields are always breaking
+        if removed:
+            return True
+        
+        # Check if new fields are required (breaking)
+        for field_name in added:
+            if new_schema.model_fields[field_name].is_required():
+                return True
+        
+        # Any modification is potentially breaking
+        if modified:
+            return True
+        
+        return False
+```
+
+**CI Integration**:
+
+```yaml
+# .github/workflows/schema-check.yml
+name: Schema Change Detection
+
+on:
+  pull_request:
+    paths:
+      - 'agents/schemas.py'
+
+jobs:
+  detect-breaking-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2  # Need previous commit
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pydantic packaging
+      
+      - name: Check for breaking changes
+        run: |
+          python scripts/detect_schema_changes.py
+      
+      - name: Comment on PR
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ **BREAKING SCHEMA CHANGE DETECTED**\n\nThis PR modifies schemas in a way that may break existing agents. Please:\n1. Bump major version number\n2. Add migration function\n3. Update SCHEMA_CHANGELOG.md'
+            })
+```
+
+**Deliverables**:
+- [ ] `SchemaDiff` utility
+- [ ] CI workflow for breaking change detection
+- [ ] PR comment bot for schema changes
+- [ ] Developer guide on schema evolution best practices
+
+### 3.3 Schema Documentation Generator
+
+**Objective**: Auto-generate human-readable schema docs
+
+**Implementation**:
+
+```python
+# scripts/generate_schema_docs.py
+from typing import Type
+from pydantic import BaseModel
+import json
+
+def generate_markdown_docs(model: Type[BaseModel]) -> str:
+    """Generate markdown documentation for a Pydantic model."""
+    
+    doc = f"# {model.__name__}\n\n"
+    
+    # Version info
+    version = getattr(model, '__schema_version__', 'unversioned')
+    doc += f"**Version**: `{version}`\n\n"
+    
+    # Model docstring
+    if model.__doc__:
+        doc += f"{model.__doc__}\n\n"
+    
+    # Fields table
+    doc += "## Fields\n\n"
+    doc += "| Field | Type | Required | Description |\n"
+    doc += "|-------|------|----------|-------------|\n"
+    
+    for field_name, field_info in model.model_fields.items():
+        field_type = str(field_info.annotation)
+        required = "✓" if field_info.is_required() else "✗"
+        description = field_info.description or "—"
+        
+        doc += f"| `{field_name}` | `{field_type}` | {required} | {description} |\n"
+    
+    # Example JSON
+    doc += "\n## Example\n\n```json\n"
+    
+    try:
+        example = model.model_json_schema().get('example', {})
+        if not example:
+            # Generate synthetic example
+            from tests.gbnf_test_gen import GBNFTestGenerator
+            generator = GBNFTestGenerator()
+            example = generator.generate_valid_instance(model)
+        
+        doc += json.dumps(example, indent=2)
+    except Exception as e:
+        doc += f"# Error generating example: {e}"
+    
+    doc += "\n```\n\n"
+    
+    # GBNF grammar preview
+    doc += "## GBNF Grammar\n\n```gbnf\n"
+    try:
+        from gbnf.generator import GBNFGenerator
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(model)
+        doc += grammar[:500]  # First 500 chars
+        if len(grammar) > 500:
+            doc += "\n... (truncated)"
+    except Exception as e:
+        doc += f"# Error generating grammar: {e}"
+    doc += "\n```\n"
+    
+    return doc
+
+# Generate docs for all schemas
+if __name__ == "__main__":
+    import agents.schemas as schemas
+    from pathlib import Path
+    
+    docs_dir = Path("docs/schemas")
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    
+    for attr_name in dir(schemas):
+        attr = getattr(schemas, attr_name)
+        if (isinstance(attr, type) and 
+            issubclass(attr, BaseModel) and 
+            attr is not BaseModel):
+            
+            doc_content = generate_markdown_docs(attr)
+            doc_path = docs_dir / f"{attr.__name__}.md"
+            doc_path.write_text(doc_content)
+            
+            print(f"Generated: {doc_path}")
+```
+
+**Deliverables**:
+- [ ] Schema documentation generator
+- [ ] Automated docs generation in CI
+- [ ] Published docs site (GitHub Pages or similar)
+- [ ] Include in pre-commit hook
+
+---
+
+## Phase 4: Pre-Commit Hooks & Automation
+**Duration**: Week 6 (5 days)
+**Owner**: Supporting Engineer
+
+### 4.1 Pre-Commit Hook Implementation
+
+**Objective**: Enforce GBNF generation and validation on every commit
+
+**Setup**:
+
+```bash
+# Install pre-commit framework
+pip install pre-commit
+
+# Create .pre-commit-config.yaml
+cat > .pre-commit-config.yaml << 'EOF'
+repos:
+  - repo: local
+    hooks:
+      - id: gbnf-validation
+        name: Validate GBNF Generation
+        entry: python scripts/validate_gbnf.py
+        language: system
+        files: agents/schemas\.py
+        pass_filenames: false
+      
+      - id: schema-changelog-check
+        name: Check Schema Changelog Updated
+        entry: python scripts/check_changelog.py
+        language: system
+        files: agents/schemas\.py
+        pass_filenames: false
+      
+      - id: gbnf-grammar-sync
+        name: Regenerate GBNF Grammars
+        entry: python scripts/regenerate_grammars.py
+        language: system
+        files: agents/schemas\.py
+        pass_filenames: false
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-yaml
+
+# Install hooks
+pre-commit install
+EOF
+```
+
+**Validation Script**:
+
+```python
+# scripts/validate_gbnf.py
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+def main():
+    print("🔍 Validating GBNF generation from Pydantic schemas...")
+    
+    # Import schemas
+    try:
+        import agents.schemas as schemas
+    except ImportError as e:
+        print(f"❌ Failed to import schemas: {e}")
+        return 1
+    
+    # Import generator
+    try:
+        from gbnf.generator import GBNFGenerator
+        from pydantic import BaseModel
+    except ImportError as e:
+        print(f"❌ Missing dependencies: {e}")
+        return 1
+    
+    generator = GBNFGenerator()
+    failures = []
+    
+    # Find all Pydantic models
+    for attr_name in dir(schemas):
+        attr = getattr(schemas, attr_name)
+        if not (isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel):
+            continue
+        
+        print(f"  Validating {attr_name}...", end=" ")
+        
+        try:
+            # Generate GBNF
+            grammar = generator.from_pydantic(attr)
+            
+            # Basic validation
+            if not grammar or len(grammar) < 10:
+                raise ValueError("Generated grammar is too short")
+            
+            if not grammar.startswith("root ::="):
+                raise ValueError("Grammar doesn't start with root rule")
+            
+            # Try to parse a test instance
+            from tests.gbnf_test_gen import GBNFTestGenerator
+            test_gen = GBNFTestGenerator()
+            test_instance = test_gen.generate_valid_instance(attr)
+            
+            # Validate Pydantic can parse it
+            attr.model_validate(test_instance)
+            
+            print("✓")
+            
+        except Exception as e:
+            print(f"✗ ({e})")
+            failures.append((attr_name, str(e)))
+    
+    if failures:
+        print("\n❌ GBNF Validation Failed:")
+        for name, error in failures:
+            print(f"  • {name}: {error}")
+        return 1
+    
+    print("\n✅ All schemas validated successfully")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Deliverables**:
+- [ ] Pre-commit configuration
+- [ ] GBNF validation script
+- [ ] Schema changelog enforcement
+- [ ] Grammar auto-regeneration
+- [ ] Developer setup documentation
+
+### 4.2 Continuous Integration Pipeline
+
+**Objective**: Automated testing and validation in CI
+
+**GitHub Actions Workflow**:
+
+```yaml
+# .github/workflows/gbnf-ci.yml
+name: GBNF Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  validate-schemas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+      
+      - name: Run GBNF validation
+        run: python scripts/validate_gbnf.py
+      
+      - name: Check grammar files are up-to-date
+        run: |
+          python scripts/regenerate_grammars.py --check
+          if [ $? -ne 0 ]; then
+            echo "❌ Grammar files are out of sync. Run 'python scripts/regenerate_grammars.py' locally."
+            exit 1
+          fi
+  
+  test-gbnf-generation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+      
+      - name: Run GBNF tests
+        run: |
+          pytest tests/test_gbnf_generation.py -v --cov=gbnf --cov-report=xml
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+  
+  integration-test:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Test LiteLLM integration
+        run: |
+          pytest tests/test_llm_client.py -v -m "integration"
+      
+      - name: Test end-to-end agent workflow
+        run: |
+          pytest tests/test_agent_integration.py -v
+```
+
+**Deliverables**:
+- [ ] Complete CI/CD pipeline
+- [ ] Integration tests with live LLM
+- [ ] Code coverage reporting
+- [ ] Automated deployments (if applicable)
+
+### 4.3 Developer Experience Tools
+
+**Objective**: Make GBNF development seamless
+
+**CLI Tool**:
+
+```python
+# cli/gbnf_cli.py
+import click
+from pathlib import Path
+from gbnf.generator import GBNFGenerator
+from agents.schemas import registry
+
+@click.group()
+def cli():
+    """GBNF development tools."""
+    pass
+
+@cli.command()
+@click.argument('schema_name')
+@click.option('--version', default=None, help='Specific schema version')
+@click.option('--output', type=click.Path(), help='Output file path')
+def generate(schema_name, version, output):
+    """Generate GBNF grammar for a schema."""
+    try:
+        if version:
+            schema = registry.get_schema(schema_name, version)
+        else:
+            schema = registry.get_latest(schema_name)
+        
+        generator = GBNFGenerator()
+        grammar = generator.from_pydantic(schema)
+        
+        if output:
+            Path(output).write_text(grammar)
+            click.echo(f"✓ Grammar written to {output}")
+        else:
+            click.echo(grammar)
+            
+    except Exception as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        raise click.Abort()
+
+@cli.command()
+@click.argument('schema_name')
+@click.option('--version', default=None)
+def validate(schema_name, version):
+    """Validate a schema can be converted to GBNF."""
+    try:
+        if version:
+            schema = registry.get_schema(schema_name, version)
+        else:
+            schema = registry.get_latest(schema_name)
+        
+        generator = GBNFGenerator()
+        grammar = generator.from_pydantic(schema)
+        
+        # Generate test instance
+        from tests.gbnf_test_gen import GBNFTestGenerator
+        test_gen = GBNFTestGenerator()
+        test_instance = test_gen.generate_valid_instance(schema)
+        
+        # Validate
+        validated = schema.model_validate(test_instance)
+        
+        click.echo(f"✓ {schema_name} validation passed")
+        click.echo(f"  Grammar size: {len(grammar)} bytes")
+        click.echo(f"  Test instance: {validated.model_dump_json()[:100]}...")
+        
+    except Exception as e:
+        click.echo(f"✗ Validation failed: {e}", err=True)
+        raise click.Abort()
+
+@cli.command()
+def list_schemas():
+    """List all registered schemas."""
+    from agents.schema_registry import registry
+    
+    click.echo("Registered Schemas:")
+    for schema_name in registry._schemas:
+        versions = sorted(registry._schemas[schema_name].keys())
+        latest = versions[-1]
+        click.echo(f"  • {schema_name}: {', '.join(versions)} (latest: {latest})")
+
+@cli.command()
+@click.argument('old_version')
+@click.argument('new_version')
+@click.argument('schema_name')
+def diff(old_version, new_version, schema_name):
+    """Show differences between schema versions."""
+    from gbnf.schema_differ import SchemaDiff
+    
+    old_schema = registry.get_schema(schema_name, old_version)
+    new_schema = registry.get_schema(schema_name, new_version)
+    
+    added, removed, modified = SchemaDiff.compare(old_schema, new_schema)
+    is_breaking = SchemaDiff.is_breaking_change(old_schema, new_schema)
+    
+    click.echo(f"Comparing {schema_name} {old_version} → {new_version}")
+    click.echo(f"Breaking change: {'⚠️  YES' if is_breaking else '✓ NO'}\n")
+    
+    if added:
+        click.echo("Added fields:")
+        for field in added:
+            click.echo(f"  + {field}")
+    
+    if removed:
+        click.echo("Removed fields:")
+        for field in removed:
+            click.echo(f"  - {field}")
+    
+    if modified:
+        click.echo("Modified fields:")
+        for change in modified:
+            click.echo(f"  ~ {change}")
+
+if __name__ == '__main__':
+    cli()
+```
+
+**Usage Examples**:
+```bash
+# Generate grammar for latest TaskPlan
+python -m cli.gbnf_cli generate TaskPlan
+
+# Validate specific version
+python -m cli.gbnf_cli validate TaskPlan --version 2.0.0
+
+# Compare versions
+python -m cli.gbnf_cli diff 1.0.0 2.0.0 TaskPlan
+
+# List all schemas
+python -m cli.gbnf_cli list-schemas
+```
+
+**Deliverables**:
+- [ ] CLI tool implementation
+- [ ] User documentation
+- [ ] Shell completion scripts
+- [ ] Integration with IDEs (VS Code extension idea)
+
+---
+
+## Phase 5: Testing & Quality Assurance
+**Duration**: Week 7 (5 days)
+**Owner**: QA + Lead Engineer
+
+### 5.1 Unit Test Suite
+
+**Test Coverage Goals**:
+- GBNF generation: >95%
+- Schema validation: 100%
+- LLM client: >90%
+- Agent integration: >85%
+
+**Key Test Files**:
+
+```python
+# tests/test_gbnf_generation.py
+import pytest
+from pydantic import BaseModel, conint, Field
+from typing import List, Optional
+from gbnf.generator import GBNFGenerator
+
+class TestBasicTypes:
+    def test_string_field(self):
+        class Model(BaseModel):
+            name: str
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        assert 'name' in grammar
+        assert '"' in grammar  # JSON string quotes
+    
+    def test_integer_field(self):
+        class Model(BaseModel):
+            count: int
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        assert 'count' in grammar
+        assert '[0-9]' in grammar or 'digit' in grammar.lower()
+    
+    def test_boolean_field(self):
+        class Model(BaseModel):
+            active: bool
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        assert 'active' in grammar
+        assert 'true' in grammar.lower() and 'false' in grammar.lower()
+
+class TestConstraints:
+    def test_constrained_int(self):
+        class Model(BaseModel):
+            priority: conint(ge=1, le=5)
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        # Should only allow 1-5
+        assert '1' in grammar
+        assert '5' in grammar
+        # Should not allow 0 or 6
+        # (This depends on implementation - enumerate vs. pattern)
+    
+    def test_string_pattern(self):
+        class Model(BaseModel):
+            id: str = Field(pattern=r'^[a-z]{3})
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        assert '[a-z]' in grammar
+        # Should enforce exactly 3 characters
+
+class TestCompositeTypes:
+    def test_list_field(self):
+        class Model(BaseModel):
+            items: List[str]
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        assert '[' in grammar  # Array brackets
+        assert ']' in grammar
+    
+    def test_optional_field(self):
+        class Model(BaseModel):
+            optional_field: Optional[str] = None
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        # Optional fields should use ? or alternation
+        # (Implementation dependent)
+    
+    def test_nested_model(self):
+        class Inner(BaseModel):
+            value: int
+        
+        class Outer(BaseModel):
+            inner: Inner
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Outer)
+        
+        # Should generate rules for both models
+        assert 'inner' in grammar.lower()
+        assert 'value' in grammar.lower()
+
+class TestRecursion:
+    def test_self_referencing_model(self):
+        class TreeNode(BaseModel):
+            value: int
+            children: Optional[List['TreeNode']] = None
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(TreeNode)
+        
+        # Should handle recursion without infinite loop
+        assert grammar is not None
+        assert len(grammar) < 10000  # Sanity check
+
+class TestRealWorldSchemas:
+    def test_task_plan_generation(self):
+        from agents.schemas import TaskPlan
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(TaskPlan)
+        
+        # Verify all fields present
+        assert 'plan_id' in grammar
+        assert 'subtasks' in grammar
+        
+        # Verify enums handled
+        assert 'low' in grammar or 'high' in grammar  # Priority enum
+    
+    def test_task_result_generation(self):
+        from agents.schemas import TaskResult
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(TaskResult)
+        
+        assert grammar.startswith('root ::=')
+```
+
+**Deliverables**:
+- [ ] Complete unit test suite (>200 tests)
+- [ ] Pytest fixtures for common patterns
+- [ ] Test data generators
+- [ ] Coverage report showing >90%
+
+### 5.2 Integration Testing
+
+**Objective**: Test entire pipeline with live LLMs
+
+```python
+# tests/test_agent_integration.py
+import pytest
+from agents.refiner import RefinerAgent
+from agents.schemas import TaskPlan
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestRefinerIntegration:
+    def test_simple_query_refinement(self):
+        """Test Refiner produces valid TaskPlan."""
+        refiner = RefinerAgent()
+        
+        state = {"user_query": "Create a simple web scraper"}
+        result = refiner.refine_task(state)
+        
+        # Validate structure
+        assert "task_plan" in result
+        plan = TaskPlan.model_validate(result["task_plan"])
+        
+        # Validate content quality
+        assert len(plan.subtasks) >= 2
+        assert len(plan.subtasks) <= 10
+        assert all(len(st.description) > 20 for st in plan.subtasks)
+    
+    def test_complex_query_refinement(self):
+        """Test Refiner handles complex multi-step tasks."""
+        refiner = RefinerAgent()
+        
+        complex_query = """
+        Build a machine learning pipeline that:
+        1. Scrapes data from multiple news sources
+        2. Cleans and preprocesses text
+        3. Trains a sentiment analysis model
+        4. Deploys as a REST API
+        5. Sets up monitoring and logging
+        """
+        
+        state = {"user_query": complex_query}
+        result = refiner.refine_task(state)
+        
+        plan = TaskPlan.model_validate(result["task_plan"])
+        
+        # Should decompose into many subtasks
+        assert len(plan.subtasks) >= 5
+        
+        # Should have dependencies
+        assert any(len(st.dependencies) > 0 for st in plan.subtasks)
+    
+    @pytest.mark.parametrize("invalid_output", [
+        '{"invalid": "json"',  # Malformed JSON
+        '{"wrong_schema": true}',  # Wrong schema
+        '',  # Empty response
+    ])
+    def test_invalid_output_handling(self, invalid_output, monkeypatch):
+        """Test system handles LLM errors gracefully."""
+        # Mock LLM to return invalid output
+        def mock_completion(*args, **kwargs):
+            class MockResponse:
+                class Choice:
+                    class Message:
+                        content = invalid_output
+                    message = Message()
+                choices = [Choice()]
+# Comprehensive GBNF Implementation Plan
+## Multi-Agent System with Automated Structured Output Enforcement
+
+[Previous content sections 0-5.2 remain the same...]
+
+---
+
+### 5.2 Integration Testing (continued)
+
+```python
+# tests/test_agent_integration.py (continued)
+    @pytest.mark.parametrize("invalid_output", [
+        '{"invalid": "json"',  # Malformed JSON
+        '{"wrong_schema": true}',  # Wrong schema
+        '',  # Empty response
+    ])
+    def test_invalid_output_handling(self, invalid_output, monkeypatch):
+        """Test system handles LLM errors gracefully."""
+        # Mock LLM to return invalid output
+        def mock_completion(*args, **kwargs):
+            class MockResponse:
+                class Choice:
+                    class Message:
+                        content = invalid_output
+                    message = Message()
+                choices = [Choice()]
+            return MockResponse()
+        
+        monkeypatch.setattr("litellm.completion", mock_completion)
+        
+        refiner = RefinerAgent()
+        state = {"user_query": "Test query"}
+        
+        # Should raise appropriate error, not crash
+        with pytest.raises((ValidationError, LLMError)):
+            refiner.refine_task(state)
+
+@pytest.mark.integration
+class TestEndToEndWorkflow:
+    """Test complete agent pipeline."""
+    
+    def test_full_agent_workflow(self):
+        """Test Coordinator -> Refiner -> Executor flow."""
+        from agents.coordinator import CoordinatorAgent
+        from agents.executor import ExecutorAgent
+        
+        # Create agent graph
+        graph = create_agent_graph()
+        
+        # Run complete workflow
+        initial_state = {
+            "user_query": "Create a Python script to fetch weather data"
+        }
+        
+        final_state = graph.invoke(initial_state)
+        
+        # Verify each stage
+        assert "task_plan" in final_state
+        assert "execution_results" in final_state
+        
+        # Verify all schemas validated
+        plan = TaskPlan.model_validate(final_state["task_plan"])
+        results = [TaskResult.model_validate(r) for r in final_state["execution_results"]]
+        
+        assert len(results) == len(plan.subtasks)
+    
+    def test_error_propagation(self):
+        """Test errors are properly propagated through agents."""
+        graph = create_agent_graph()
+        
+        # Inject a task that will fail
+        initial_state = {
+            "user_query": "Do something impossible that will definitely fail"
+        }
+        
+        final_state = graph.invoke(initial_state)
+        
+        # Should have error handling results
+        assert any(
+            TaskResult.model_validate(r).status == ExecutionStatus.FAILED
+            for r in final_state.get("execution_results", [])
+        )
+```
+
+**Deliverables**:
+- [ ] Integration test suite (>50 tests)
+- [ ] End-to-end workflow tests
+- [ ] Error handling tests
+- [ ] Performance benchmarks
+
+### 5.3 Stress Testing & Performance
+
+**Objective**: Validate system under load and edge cases
+
+```python
+# tests/test_performance.py
+import pytest
+import time
+from typing import List
+from pydantic import BaseModel
+from gbnf.generator import GBNFGenerator
+
+class TestGenerationPerformance:
+    """Test GBNF generation speed."""
+    
+    def test_simple_schema_performance(self):
+        """Simple schemas should generate in <50ms."""
+        class SimpleModel(BaseModel):
+            name: str
+            age: int
+            active: bool
+        
+        gen = GBNFGenerator()
+        
+        start = time.perf_counter()
+        grammar = gen.from_pydantic(SimpleModel)
+        elapsed = time.perf_counter() - start
+        
+        assert elapsed < 0.05, f"Generation took {elapsed:.3f}s, expected <50ms"
+    
+    def test_complex_schema_performance(self):
+        """Complex schemas should generate in <500ms."""
+        from agents.schemas import TaskPlan  # Complex nested model
+        
+        gen = GBNFGenerator()
+        
+        start = time.perf_counter()
+        grammar = gen.from_pydantic(TaskPlan)
+        elapsed = time.perf_counter() - start
+        
+        assert elapsed < 0.5, f"Generation took {elapsed:.3f}s, expected <500ms"
+    
+    def test_grammar_caching(self):
+        """Cached grammars should be retrieved in <1ms."""
+        from agents.llm_client import StructuredLLMClient
+        from agents.schemas import TaskPlan
+        
+        client = StructuredLLMClient()
+        
+        # First call (cache miss)
+        start = time.perf_counter()
+        # Trigger cache population
+        _ = client.grammar_cache.get(TaskPlan.__name__)
+        elapsed_miss = time.perf_counter() - start
+        
+        # Generate to populate cache
+        from gbnf.generator import GBNFGenerator
+        gen = GBNFGenerator()
+        client.grammar_cache[TaskPlan.__name__] = gen.from_pydantic(TaskPlan)
+        
+        # Second call (cache hit)
+        start = time.perf_counter()
+        _ = client.grammar_cache.get(TaskPlan.__name__)
+        elapsed_hit = time.perf_counter() - start
+        
+        assert elapsed_hit < 0.001, f"Cache retrieval took {elapsed_hit:.6f}s"
+        assert elapsed_hit < elapsed_miss / 10, "Cache not providing speedup"
+
+class TestStressScenarios:
+    """Test edge cases and limits."""
+    
+    def test_deeply_nested_models(self):
+        """Test generation with deep nesting (10+ levels)."""
+        # Create deeply nested structure
+        class Level10(BaseModel):
+            value: str
+        
+        class Level9(BaseModel):
+            inner: Level10
+        
+        # ... continue to Level0
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Level0)
+        
+        # Should handle deep nesting without stack overflow
+        assert grammar is not None
+        assert len(grammar) < 50000  # Reasonable size
+    
+    def test_large_enum(self):
+        """Test generation with large enum (100+ values)."""
+        from enum import Enum
+        
+        LargeEnum = Enum('LargeEnum', {f'VALUE_{i}': f'value_{i}' for i in range(100)})
+        
+        class Model(BaseModel):
+            choice: LargeEnum
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(Model)
+        
+        # Should generate alternation with all values
+        assert 'value_0' in grammar
+        assert 'value_99' in grammar
+    
+    def test_wide_model(self):
+        """Test model with many fields (100+)."""
+        # Create model with 100 fields
+        fields = {f'field_{i}': (str, ...) for i in range(100)}
+        WideModel = type('WideModel', (BaseModel,), {'__annotations__': fields})
+        
+        gen = GBNFGenerator()
+        start = time.perf_counter()
+        grammar = gen.from_pydantic(WideModel)
+        elapsed = time.perf_counter() - start
+        
+        assert elapsed < 2.0, f"Wide model generation took {elapsed:.2f}s"
+        assert all(f'field_{i}' in grammar for i in range(0, 100, 10))
+    
+    @pytest.mark.parametrize("concurrency", [5, 10, 20])
+    def test_concurrent_generation(self, concurrency):
+        """Test thread-safety of generator."""
+        import concurrent.futures
+        from agents.schemas import TaskPlan
+        
+        def generate():
+            gen = GBNFGenerator()
+            return gen.from_pydantic(TaskPlan)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [executor.submit(generate) for _ in range(concurrency)]
+            results = [f.result() for f in futures]
+        
+        # All results should be identical
+        assert all(r == results[0] for r in results)
+        # No exceptions should be raised
+        assert len(results) == concurrency
+
+class TestMemoryUsage:
+    """Test memory efficiency."""
+    
+    def test_grammar_size_limits(self):
+        """Generated grammars should stay under 1MB."""
+        from agents.schemas import TaskPlan
+        
+        gen = GBNFGenerator()
+        grammar = gen.from_pydantic(TaskPlan)
+        
+        size_bytes = len(grammar.encode('utf-8'))
+        size_kb = size_bytes / 1024
+        
+        assert size_kb < 1024, f"Grammar is {size_kb:.2f}KB, expected <1MB"
+    
+    def test_no_memory_leaks(self):
+        """Repeated generation shouldn't leak memory."""
+        import gc
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        
+        # Get baseline memory
+        gc.collect()
+        baseline_mb = process.memory_info().rss / 1024 / 1024
+        
+        # Generate grammars repeatedly
+        from agents.schemas import TaskPlan
+        gen = GBNFGenerator()
+        
+        for _ in range(1000):
+            _ = gen.from_pydantic(TaskPlan)
+        
+        # Check memory after
+        gc.collect()
+        final_mb = process.memory_info().rss / 1024 / 1024
+        
+        growth_mb = final_mb - baseline_mb
+        assert growth_mb < 50, f"Memory grew by {growth_mb:.2f}MB, possible leak"
+```
+
+**Deliverables**:
+- [ ] Performance test suite
+- [ ] Stress test scenarios
+- [ ] Memory profiling tests
+- [ ] Benchmarking reports
+
+---
+
+## Phase 6: Documentation & Training
+**Duration**: Week 8 (5 days)
+**Owner**: Lead Engineer + Technical Writer
+
+### 6.1 Architecture Documentation
+
+**Objective**: Comprehensive system documentation
+
+**Documents to Create**:
+
+1. **Architecture Overview** (`docs/architecture.md`)
+```markdown
+# GBNF System Architecture
+
+## Overview
+The GBNF system enforces structured outputs from LLMs by automatically generating 
+and applying formal grammars derived from Pydantic schemas.
+
+## Components
+
+### 1. Schema Layer (Single Source of Truth)
+- Location: `agents/schemas.py`
+- All agent communication schemas defined here
+- Pydantic 2.x models with full type annotations
+- Version tracking via `__schema_version__`
+
+### 2. GBNF Generator
+- Location: `gbnf/generator.py`
+- Converts Pydantic models to GBNF grammars
+- Handles primitives, containers, nested models, enums
+- Optimizes and caches generated grammars
+
+### 3. LLM Client
+- Location: `agents/llm_client.py`
+- Wraps LiteLLM with automatic grammar injection
+- Fallback to prompt-based structured output
+- Retry logic and error handling
+
+### 4. Schema Registry
+- Location: `agents/schema_registry.py`
+- Manages schema versions
+- Provides version resolution
+- Enables backward compatibility
+
+## Data Flow
+
+```
+User Query
+    ↓
+[Coordinator Agent]
+    ↓
+Pydantic Schema (TaskPlan)
+    ↓
+[GBNF Generator] → Grammar Cache
+    ↓
+[StructuredLLMClient]
+    ↓
+LiteLLM + Grammar Constraint
+    ↓
+llama.cpp Backend
+    ↓
+Guaranteed Valid JSON
+    ↓
+[Pydantic Validation] ✓
+    ↓
+[Next Agent]
+```
+
+## Key Design Decisions
+
+### Why GBNF over JSON Schema?
+- **Deterministic**: GBNF constrains generation at sampling time
+- **Efficient**: No post-generation validation/retry loops
+- **Guaranteed**: Mathematically impossible to generate invalid output
+
+### Why Single Source of Truth?
+- Eliminates schema drift between agents
+- Single update point for schema changes
+- Automated grammar regeneration
+
+### Why Version Everything?
+- Enables safe schema evolution
+- Allows gradual agent migration
+- Provides rollback capability
+```
+
+2. **Developer Guide** (`docs/developer_guide.md`)
+```markdown
+# GBNF Developer Guide
+
+## Getting Started
+
+### 1. Define a New Schema
+
+```python
+# agents/schemas.py
+from pydantic import BaseModel, Field
+from typing import List
+
+class MyNewSchema(BaseModel):
+    """Description of what this schema represents."""
+    __schema_version__: str = "1.0.0"
+    
+    field1: str = Field(description="What this field contains")
+    field2: int = Field(ge=0, le=100, description="Constrained integer")
+    items: List[str] = Field(default_factory=list)
+```
+
+### 2. Generate Grammar (Automatic)
+
+Grammars are automatically generated when you use `StructuredLLMClient`:
+
+```python
+from agents.llm_client import StructuredLLMClient
+from agents.schemas import MyNewSchema
+
+client = StructuredLLMClient()
+response: MyNewSchema = client.generate_structured(
+    messages=[{"role": "user", "content": "Your prompt"}],
+    response_model=MyNewSchema
+)
+```
+
+### 3. Manual Grammar Generation (for testing)
+
+```bash
+# CLI tool
+python -m cli.gbnf_cli generate MyNewSchema --output grammars/MyNewSchema.gbnf
+
+# Programmatically
+from gbnf.generator import GBNFGenerator
+
+gen = GBNFGenerator()
+grammar = gen.from_pydantic(MyNewSchema)
+print(grammar)
+```
+
+## Best Practices
+
+### Schema Design
+
+✅ **DO:**
+- Use descriptive field names
+- Add field descriptions
+- Specify constraints (min_length, ge, le, pattern)
+- Use Enums for fixed options
+- Version all schemas
+
+❌ **DON'T:**
+- Use overly generic names (data, info, stuff)
+- Omit type hints
+- Create deeply nested structures (>5 levels)
+- Make everything required (use Optional when appropriate)
+
+### Adding New Agent Communication
+
+1. **Define the schema** in `agents/schemas.py`
+2. **Write tests** in `tests/test_schemas.py`
+3. **Update agent** to use `StructuredLLMClient`
+4. **Run validation**: `python scripts/validate_gbnf.py`
+5. **Commit** (pre-commit hooks will verify everything)
+
+### Schema Evolution
+
+**Minor Version (1.0.0 → 1.1.0)**: Backward compatible
+- Add optional fields
+- Relax constraints
+
+**Major Version (1.x.x → 2.0.0)**: Breaking changes
+- Add required fields
+- Remove fields
+- Change types
+- Tighten constraints
+
+```python
+# Old version (keep for compatibility)
+class TaskPlanV1(BaseModel):
+    __schema_version__: str = "1.0.0"
+    plan_id: str
+    subtasks: List[SubTask]
+
+# New version
+class TaskPlanV2(BaseModel):
+    __schema_version__: str = "2.0.0"
+    plan_id: str
+    subtasks: List[SubTask]
+    priority: TaskPriority  # New required field (breaking)
+    
+    @classmethod
+    def from_v1(cls, v1: TaskPlanV1) -> "TaskPlanV2":
+        return cls(
+            plan_id=v1.plan_id,
+            subtasks=v1.subtasks,
+            priority=TaskPriority.MEDIUM  # Default for migration
+        )
+
+# Alias latest version
+TaskPlan = TaskPlanV2
+```
+
+## Troubleshooting
+
+### Grammar Generation Fails
+
+**Error**: `NotImplementedError: Type X not supported`
+
+**Solution**: The type isn't yet supported. Options:
+1. Use a supported type (str, int, float, bool, List, Optional, BaseModel)
+2. Implement support in `gbnf/generator.py`
+3. File an issue
+
+### Validation Fails Despite GBNF
+
+**Error**: `ValidationError` on Pydantic validation
+
+**This should never happen** with GBNF enforcement. If it does:
+1. Check if grammar was actually used (check logs)
+2. Verify LLM backend supports grammar parameter
+3. Report as bug - grammar may be incorrect
+
+### Performance Issues
+
+**Symptom**: Slow generation (<1 token/sec)
+
+**Causes**:
+- Complex grammar (>10KB)
+- Backend doesn't support grammar optimization
+- Network latency (if using remote backend)
+
+**Solutions**:
+- Simplify schema (reduce nesting, fewer fields)
+- Use grammar caching (automatic in StructuredLLMClient)
+- Use local llama.cpp for lowest latency
+```
+
+3. **API Reference** (`docs/api_reference.md`)
+```markdown
+# API Reference
+
+## Core Classes
+
+### GBNFGenerator
+
+Converts Pydantic models to GBNF grammar strings.
+
+```python
+class GBNFGenerator:
+    def from_pydantic(
+        self,
+        model: Type[BaseModel],
+        root_name: str = "root"
+    ) -> str:
+        """
+        Generate GBNF grammar from Pydantic model.
+        
+        Args:
+            model: Pydantic model class
+            root_name: Name for root grammar rule
+        
+        Returns:
+            Complete GBNF grammar string
+        
+        Raises:
+            NotImplementedError: If model contains unsupported types
+            ValueError: If model is invalid
+        """
+```
+
+### StructuredLLMClient
+
+LiteLLM wrapper with automatic GBNF enforcement.
+
+```python
+class StructuredLLMClient:
+    def __init__(self, model: str = "together_ai/meta-llama/..."):
+        """
+        Initialize client.
+        
+        Args:
+            model: LiteLLM model identifier
+        """
+    
+    def generate_structured(
+        self,
+        messages: List[Dict[str, str]],
+        response_model: Type[BaseModel],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs
+    ) -> BaseModel:
+        """
+        Generate structured output.
+        
+        Args:
+            messages: Chat messages in OpenAI format
+            response_model: Pydantic model for response structure
+            temperature: Sampling temperature (0-1)
+            max_tokens: Maximum response length
+            **kwargs: Additional LiteLLM parameters
+        
+        Returns:
+            Validated instance of response_model
+        
+        Raises:
+            ValidationError: If output doesn't match schema
+            LLMError: If generation fails
+        """
+```
+
+### SchemaRegistry
+
+Manages schema versions.
+
+```python
+class SchemaRegistry:
+    def register(self, schema_class: Type[BaseModel]) -> None:
+        """Register a schema version."""
+    
+    def get_schema(self, name: str, version: str) -> Type[BaseModel]:
+        """Get specific schema version."""
+    
+    def get_latest(self, name: str) -> Type[BaseModel]:
+        """Get latest version of schema."""
+```
+
+## CLI Commands
+
+### generate
+```bash
+python -m cli.gbnf_cli generate SCHEMA_NAME [OPTIONS]
+
+Options:
+  --version TEXT    Specific schema version
+  --output PATH     Output file path
+```
+
+### validate
+```bash
+python -m cli.gbnf_cli validate SCHEMA_NAME [OPTIONS]
+
+Options:
+  --version TEXT    Schema version to validate
+```
+
+### diff
+```bash
+python -m cli.gbnf_cli diff OLD_VERSION NEW_VERSION SCHEMA_NAME
+```
+
+### list-schemas
+```bash
+python -m cli.gbnf_cli list-schemas
+```
+```
+
+**Deliverables**:
+- [ ] Architecture documentation
+- [ ] Developer guide
+- [ ] API reference
+- [ ] Troubleshooting guide
+
+### 6.2 Training Materials
+
+**Objective**: Enable team to use system effectively
+
+**Training Modules**:
+
+1. **Module 1: Introduction to GBNF** (30 min)
+   - What is GBNF and why use it?
+   - Comparison with JSON Schema / Function Calling
+   - Benefits for multi-agent systems
+   - Live demo
+
+2. **Module 2: Schema Design Workshop** (1 hour)
+   - Pydantic basics refresher
+   - Designing agent communication schemas
+   - Constraints and validation
+   - Hands-on exercise: Design schema for new agent
+
+3. **Module 3: Integration Patterns** (45 min)
+   - Using StructuredLLMClient
+   - LangGraph integration
+   - Error handling patterns
+   - Code walkthrough
+
+4. **Module 4: Advanced Topics** (1 hour)
+   - Schema versioning strategies
+   - Performance optimization
+   - Debugging GBNF issues
+   - Contributing to generator
+
+**Deliverables**:
+- [ ] Training slide decks
+- [ ] Video recordings
+- [ ] Hands-on exercises
+- [ ] Quiz/assessment
+
+### 6.3 Onboarding Checklist
+
+**New Developer Onboarding**:
+
+```markdown
+# GBNF System Onboarding
+
+## Day 1: Setup
+- [ ] Clone repository
+- [ ] Install dependencies: `pip install -r requirements.txt`
+- [ ] Run tests: `pytest tests/`
+- [ ] Install pre-commit hooks: `pre-commit install`
+- [ ] Review architecture docs
+
+## Day 2: Schema Familiarization
+- [ ] Read all schemas in `agents/schemas.py`
+- [ ] Generate grammars for each schema
+- [ ] Review generated grammars in `gbnf_grammars/`
+- [ ] Complete training Module 1
+
+## Day 3: Code Exploration
+- [ ] Read `gbnf/generator.py` - understand type mapping
+- [ ] Read `agents/llm_client.py` - understand LLM integration
+- [ ] Trace execution through one agent call
+- [ ] Complete training Module 2
+
+## Day 4: Hands-On Practice
+- [ ] Add a new field to existing schema (minor version bump)
+- [ ] Create a new schema for hypothetical agent
+- [ ] Write unit tests for your schema
+- [ ] Complete training Module 3
+
+## Day 5: Integration
+- [ ] Implement a simple agent using StructuredLLMClient
+- [ ] Add to LangGraph
+- [ ] Write integration test
+- [ ] Complete training Module 4
+- [ ] Submit first PR!
+
+## Ongoing
+- [ ] Join #gbnf-dev Slack channel
+- [ ] Bookmark docs site
+- [ ] Set up local llama.cpp for testing
+```
+
+**Deliverables**:
+- [ ] Onboarding checklist
+- [ ] Mentor assignment process
+- [ ] Feedback collection mechanism
+
+---
+
+## Phase 7: Deployment & Monitoring
+**Duration**: Week 9-10 (10 days)
+**Owner**: DevOps + Lead Engineer
+
+### 7.1 Production Deployment
+
+**Objective**: Deploy system to production safely
+
+**Deployment Strategy**: Blue-Green Deployment
+
+**Steps**:
+
+1. **Staging Environment Setup** (Days 1-2)
+   ```yaml
+   # k8s/staging-deployment.yaml
+   apiVersion: apps/v1
+   kind: Deployment
+   metadata:
+     name: gbnf-agents-staging
+   spec:
+     replicas: 2
+     selector:
+       matchLabels:
+         app: gbnf-agents
+         env: staging
+     template:
+       metadata:
+         labels:
+           app: gbnf-agents
+           env: staging
+       spec:
+         containers:
+         - name: agent-service
+           image: your-registry/gbnf-agents:latest
+           env:
+           - name: ENVIRONMENT
+             value: "staging"
+           - name: LOG_LEVEL
+             value: "DEBUG"
+           - name: GRAMMAR_CACHE_SIZE
+             value: "1000"
+           resources:
+             requests:
+               memory: "512Mi"
+               cpu: "500m"
+             limits:
+               memory: "2Gi"
+               cpu: "2000m"
+   ```
+
+2. **Smoke Tests** (Day 3)
+   ```python
+   # tests/smoke_tests.py
+   import requests
+   import pytest
+   
+   STAGING_URL = "https://staging.yourapp.com"
+   
+   def test_health_check():
+       """Verify service is running."""
+       response = requests.get(f"{STAGING_URL}/health")
+       assert response.status_code == 200
+       assert response.json()["status"] == "healthy"
+   
+   def test_schema_endpoint():
+       """Verify schema registry accessible."""
+       response = requests.get(f"{STAGING_URL}/schemas")
+       assert response.status_code == 200
+       schemas = response.json()
+       assert "TaskPlan" in schemas
+   
+   def test_agent_execution():
+       """End-to-end test of agent workflow."""
+       payload = {
+           "query": "Create a simple web scraper"
+       }
+       response = requests.post(
+           f"{STAGING_URL}/agent/execute",
+           json=payload
+       )
+       assert response.status_code == 200
+       result = response.json()
+       assert "task_plan" in result
+   ```
+
+3. **Gradual Rollout** (Days 4-6)
+   - **10%** of traffic to new version (Day 4)
+   - **50%** of traffic (Day 5)
+   - **100%** of traffic (Day 6)
+   - Monitor metrics at each stage
+   - Rollback plan ready
+
+4. **Production Monitoring** (Days 7-10)
+   ```python
+   # monitoring/metrics.py
+   from prometheus_client import Counter, Histogram, Gauge
+   
+   # Grammar generation metrics
+   grammar_generation_duration = Histogram(
+       'gbnf_grammar_generation_seconds',
+       'Time to generate GBNF grammar',
+       ['schema_name']
+   )
+   
+   grammar_cache_hits = Counter(
+       'gbnf_grammar_cache_hits_total',
+       'Number of grammar cache hits',
+       ['schema_name']
+   )
+   
+   grammar_cache_misses = Counter(
+       'gbnf_grammar_cache_misses_total',
+       'Number of grammar cache misses',
+       ['schema_name']
+   )
+   
+   # Validation metrics
+   validation_success = Counter(
+       'gbnf_validation_success_total',
+       'Successful schema validations',
+       ['agent_name', 'schema_name']
+   )
+   
+   validation_failure = Counter(
+       'gbnf_validation_failure_total',
+       'Failed schema validations',
+       ['agent_name', 'schema_name', 'error_type']
+   )
+   
+   # LLM metrics
+   llm_generation_duration = Histogram(
+       'gbnf_llm_generation_seconds',
+       'LLM generation time with grammar',
+       ['model', 'schema_name']
+   )
+   
+   llm_token_usage = Counter(
+       'gbnf_llm_tokens_total',
+       'Total tokens used',
+       ['model', 'token_type']  # prompt or completion
+   )
+   
+   # System health
+   active_agents = Gauge(
+       'gbnf_active_agents',
+       'Number of active agent instances',
+       ['agent_type']
+   )
+   ```
+
+**Deliverables**:
+- [ ] Staging environment configured
+- [ ] Smoke test suite passing
+- [ ] Production deployment playbook
+- [ ] Rollback procedures documented
+
+### 7.2 Observability Stack
+
+**Objective**: Complete visibility into system behavior
+
+**Components**:
+
+1. **Logging** (Structured with `structlog`)
+   ```python
+   # agents/logging_config.py
+   import structlog
+   
+   def configure_logging():
+       structlog.configure(
+           processors=[
+               structlog.stdlib.filter_by_level,
+               structlog.stdlib.add_logger_name,
+               structlog.stdlib.add_log_level,
+               structlog.stdlib.PositionalArgumentsFormatter(),
+               structlog.processors.TimeStamper(fmt="iso"),
+               structlog.processors.StackInfoRenderer(),
+               structlog.processors.format_exc_info,
+               structlog.processors.UnicodeDecoder(),
+               structlog.processors.JSONRenderer()
+           ],
+           context_class=dict,
+           logger_factory=structlog.stdlib.LoggerFactory(),
+           cache_logger_on_first_use=True,
+       )
+   ```
+
+2. **Metrics** (Prometheus + Grafana)
+   ```yaml
+   # monitoring/grafana-dashboard.json
+   {
+     "dashboard": {
+       "title": "GBNF System Overview",
+       "panels": [
+         {
+           "title": "Grammar Generation Rate",
+           "targets": [{
+             "expr": "rate(gbnf_grammar_generation_seconds_count[5m])"
+           }]
+         },
+         {
+           "title": "Cache Hit Rate",
+           "targets": [{
+             "expr": "gbnf_grammar_cache_hits_total / (gbnf_grammar_cache_hits_total + gbnf_grammar_cache_misses_total)"
+           }]
+         },
+         {
+           "title": "Validation Success Rate",
+           "targets": [{
+             "expr": "gbnf_validation_success_total / (gbnf_validation_success_total + gbnf_validation_failure_total)"
+           }]
+         },
+         {
+           "title": "LLM Latency P95",
+           "targets": [{
+             "expr": "histogram_quantile(0.95, gbnf_llm_generation_seconds_bucket)"
+           }]
+         }
+       ]
+     }
+   }
+   ```
+
+3. **Tracing** (OpenTelemetry)
+   ```python
+   # monitoring/tracing.py
+   from opentelemetry import trace
+   from opentelemetry.sdk.trace import TracerProvider
+   from opentelemetry.sdk.trace.export import BatchSpanProcessor
+   
+   def setup_tracing():
+       tracer_provider = TracerProvider()
+       trace.set_tracer_provider(tracer_provider)
+       
+       # Add your exporter (Jaeger, Zipkin, etc.)
+       span_processor = BatchSpanProcessor(your_exporter)
+       tracer_provider.add_span_processor(span_processor)
+   
+   # Usage in agents
+   tracer = trace.get_tracer(__name__)
+   
+   def refine_task(state):
+       with tracer.start_as_current_span("refine_task") as span:
+           span.set_attribute("user_query", state["user_query"])
+           
+           with tracer.start_as_current_span("generate_grammar"):
+               # ... grammar generation
+               span.set_attribute("grammar_size", len(grammar))
+           
+           with tracer.start_as_current_span("llm_generation"):
+               # ... LLM call
+               span.set_attribute("tokens_used", tokens)
+   ```
+
+4. **Alerting** (Alertmanager)
+   ```yaml
+   # monitoring/alerts.yaml
+   groups:
+   - name: gbnf_alerts
+     rules:
+     - alert: HighValidationFailureRate
+       expr: |
+         rate(gbnf_validation_failure_total[5m]) / 
+         rate(gbnf_validation_success_total[5m] + gbnf_validation_failure_total[5m]) > 0.05
+       for: 5m
+       labels:
+         severity: critical
+       annotations:
+         summary: "High validation failure rate detected"
+         description: "Validation failure rate is {{ $value | humanizePercentage }}"
+     
+     - alert: SlowGrammarGeneration
+       expr: |
+         histogram_quantile(0.95, 
+           rate(gbnf_grammar_generation_seconds_bucket[5m])
+         ) > 0.5
+       for: 10m
+       labels:
+         severity: warning
+       annotations:
+         summary: "Grammar generation is slow"
+         description: "P95 latency is {{ $value }}s"
+     
+     - alert: LowCacheHitRate
+       expr: |
+         gbnf_grammar_cache_hits_total / 
+         (gbnf_grammar_cache_hits_total + gbnf_grammar_cache_misses_total) < 0.8
+       for: 15m
+       labels:
+         severity: info
+       annotations:
+         summary: "Grammar cache hit rate below 80%"
+         description: "Consider increasing cache size"
+   ```
+
+**Deliverables**:
+- [ ] Complete observability stack deployed
+- [ ] Grafana dashboards configured
+- [ ] Alerting rules defined
+- [ ] On-call runbook created
+
+### 7.3 Production Hardening
+
+**Objective**: Make system resilient to failures
+
+**Reliability Improvements**:
+
+1. **Circuit Breaker Pattern**
+   ```python
+   # agents/circuit_breaker.py
+   from datetime import datetime, timedelta
+   from typing import Callable, Any
+   from enum import Enum
+   
+   class CircuitState(Enum):
+       CLOSED = "closed"  # Normal operation
+       OPEN = "open"      # Failing, reject requests
+       HALF_OPEN = "half_open"  # Testing recovery
+   
+   class CircuitBreaker:
+       """Protect against cascading failures."""
+       
+       def __init__(
+           self,
+           failure_threshold: int = 5,
+           recovery_timeout: int = 60,
+           expected_exception: type = Exception
+       ):
+           self.failure_threshold = failure_threshold
+           self.recovery_timeout = recovery_timeout
+           self.expected_exception = expected_exception
+           
+           self.failure_count = 0
+           self.last_failure_time = None
+           self.state = CircuitState.CLOSED
+       
+       def call(self, func: Callable, *args, **kwargs) -> Any:
+           """Execute function with circuit breaker protection."""
+           if self.state == CircuitState.OPEN:
+               if self._should_attempt_reset():
+                   self.state = CircuitState.HALF_OPEN
+               else:
+                   raise CircuitBreakerOpenError(
+                       f"Circuit breaker open, try again in {self._time_until_reset()}s"
+                   )
+           
+           try:
+               result = func(*args, **kwargs)
+               self._on_success()
+               return result
+           except self.expected_exception as e:
+               self._on_failure()
+               raise
+       
+       def _should_attempt_reset(self) -> bool:
+           """Check if enough time has passed to try recovery."""
+           return (
+               datetime.now() - self.last_failure_time
+           ).total_seconds() >= self.recovery_timeout
+       
+       def _on_success(self):
+           """Reset failure count on success."""
+           self.failure_count = 0
+           if self.state == CircuitState.HALF_OPEN:
+               self.state = CircuitState.CLOSED
+       
+       def _on_failure(self):
+           """Track failures and open circuit if threshold exceeded."""
+           self.failure_count += 1
+           self.last_failure_time = datetime.now()
+           
+           if self.failure_count >= self.failure_threshold:
+               self.state = CircuitState.OPEN
+       
+       def _time_until_reset(self) -> int:
+           """Calculate seconds until circuit can reset."""
+           elapsed = (datetime.now() - self.last_failure_time).total_seconds()
+           return max(0, int(self.recovery_timeout - elapsed))
+   
+   # Integration with StructuredLLMClient
+   class StructuredLLMClient:
+       def __init__(self, model: str):
+           self.model = model
+           self.circuit_breaker = CircuitBreaker(
+               failure_threshold=5,
+               recovery_timeout=60,
+               expected_exception=LLMError
+           )
+       
+       def generate_structured(self, messages, response_model, **kwargs):
+           return self.circuit_breaker.call(
+               self._generate_structured_impl,
+               messages,
+               response_model,
+               **kwargs
+           )
+   ```
+
+2. **Rate Limiting**
+   ```python
+   # agents/rate_limiter.py
+   from datetime import datetime, timedelta
+   from collections import deque
+   from threading import Lock
+   
+   class RateLimiter:
+       """Token bucket rate limiter."""
+       
+       def __init__(self, max_requests: int, time_window: int):
+           """
+           Args:
+               max_requests: Maximum requests allowed in time window
+               time_window: Time window in seconds
+           """
+           self.max_requests = max_requests
+           self.time_window = time_window
+           self.requests = deque()
+           self.lock = Lock()
+       
+       def allow_request(self) -> bool:
+           """Check if request should be allowed."""
+           with self.lock:
+               now = datetime.now()
+               cutoff = now - timedelta(seconds=self.time_window)
+               
+               # Remove old requests
+               while self.requests and self.requests[0] < cutoff:
+                   self.requests.popleft()
+               
+               # Check limit
+               if len(self.requests) < self.max_requests:
+                   self.requests.append(now)
+                   return True
+               
+               return False
+       
+       def wait_time(self) -> float:
+           """Calculate wait time until next request allowed."""
+           with self.lock:
+               if len(self.requests) < self.max_requests:
+                   return 0.0
+               
+               oldest = self.requests[0]
+               wait_until = oldest + timedelta(seconds=self.time_window)
+               wait_seconds = (wait_until - datetime.now()).total_seconds()
+               
+               return max(0.0, wait_seconds)
+   
+   # Usage
+   class StructuredLLMClient:
+       def __init__(self, model: str):
+           self.rate_limiter = RateLimiter(
+               max_requests=100,  # 100 requests
+               time_window=60     # per minute
+           )
+       
+       def generate_structured(self, messages, response_model, **kwargs):
+           if not self.rate_limiter.allow_request():
+               wait_time = self.rate_limiter.wait_time()
+               raise RateLimitExceededError(
+                   f"Rate limit exceeded. Retry in {wait_time:.1f}s"
+               )
+           
+           # ... proceed with generation
+   ```
+
+3. **Retry Logic with Exponential Backoff**
+   ```python
+   # agents/retry.py
+   import time
+   from typing import Callable, Type, Tuple
+   
+   def retry_with_backoff(
+       func: Callable,
+       max_retries: int = 3,
+       initial_delay: float = 1.0,
+       backoff_factor: float = 2.0,
+       exceptions: Tuple[Type[Exception], ...] = (Exception,)
+   ):
+       """Retry function with exponential backoff."""
+       delay = initial_delay
+       
+       for attempt in range(max_retries):
+           try:
+               return func()
+           except exceptions as e:
+               if attempt == max_retries - 1:
+                   # Last attempt, re-raise
+                   raise
+               
+               logger.warning(
+                   "retry_attempt",
+                   attempt=attempt + 1,
+                   max_retries=max_retries,
+                   delay=delay,
+                   error=str(e)
+               )
+               
+               time.sleep(delay)
+               delay *= backoff_factor
+   
+   # Usage in LLM client
+   def generate_structured(self, messages, response_model, **kwargs):
+       return retry_with_backoff(
+           lambda: self._generate_structured_impl(messages, response_model, **kwargs),
+           max_retries=3,
+           exceptions=(LLMError, NetworkError)
+       )
+   ```
+
+4. **Graceful Degradation**
+   ```python
+   # agents/fallback.py
+   class StructuredLLMClient:
+       def __init__(self, model: str, fallback_model: str = None):
+           self.model = model
+           self.fallback_model = fallback_model
+       
+       def generate_structured(self, messages, response_model, **kwargs):
+           # Try primary model with GBNF
+           try:
+               return self._generate_with_grammar(
+                   self.model, messages, response_model, **kwargs
+               )
+           except GrammarNotSupportedError:
+               logger.warning("grammar_fallback", model=self.model)
+               # Fall back to prompt-based structured output
+               return self._generate_with_prompting(
+                   self.model, messages, response_model, **kwargs
+               )
+           except LLMError as e:
+               if self.fallback_model:
+                   logger.error(
+                       "model_fallback",
+                       primary_model=self.model,
+                       fallback_model=self.fallback_model,
+                       error=str(e)
+                   )
+                   # Try fallback model
+                   return self._generate_with_grammar(
+                       self.fallback_model, messages, response_model, **kwargs
+                   )
+               raise
+   ```
+
+**Deliverables**:
+- [ ] Circuit breaker implementation
+- [ ] Rate limiting implementation
+- [ ] Retry logic with backoff
+- [ ] Fallback mechanisms
+- [ ] Load testing results
+
+### 7.4 Disaster Recovery
+
+**Objective**: Ensure business continuity
+
+**Recovery Plans**:
+
+1. **Backup Strategy**
+   ```yaml
+   # Schema backup (daily)
+   schedule: "0 2 * * *"  # 2 AM daily
+   command: |
+     git archive --format=tar.gz HEAD:agents/schemas.py > \
+       backups/schemas_$(date +%Y%m%d).tar.gz
+     
+     # Upload to S3
+     aws s3 cp backups/ s3://your-backup-bucket/schemas/ --recursive
+   
+   retention: 90 days
+   ```
+
+2. **Rollback Procedures**
+   ```bash
+   #!/bin/bash
+   # scripts/rollback.sh
+   
+   set -e
+   
+   VERSION=$1
+   
+   if [ -z "$VERSION" ]; then
+     echo "Usage: ./rollback.sh <version>"
+     exit 1
+   fi
+   
+   echo "Rolling back to version $VERSION"
+   
+   # 1. Switch to blue environment
+   kubectl set image deployment/gbnf-agents \
+     agent-service=your-registry/gbnf-agents:$VERSION
+   
+   # 2. Wait for rollout
+   kubectl rollout status deployment/gbnf-agents --timeout=5m
+   
+   # 3. Verify health
+   curl -f https://yourapp.com/health || {
+     echo "Health check failed after rollback!"
+     exit 1
+   }
+   
+   # 4. Switch traffic
+   kubectl patch service gbnf-agents-service \
+     -p '{"spec":{"selector":{"version":"'$VERSION'"}}}'
+   
+   echo "Rollback complete to version $VERSION"
+   ```
+
+3. **Incident Response Runbook**
+   ```markdown
+   # Incident Response Runbook
+   
+   ## Scenario 1: High Validation Failure Rate
+   
+   **Symptoms**: 
+   - Alert: HighValidationFailureRate firing
+   - Grafana shows >5% validation failures
+   
+   **Investigation**:
+   1. Check recent schema changes: `git log -n 10 --oneline agents/schemas.py`
+   2. Review validation error logs: `kubectl logs -l app=gbnf-agents | grep validation_failure`
+   3. Identify failing schema: Look for `schema_name` in logs
+   
+   **Resolution**:
+   - If due to recent schema change: Roll back schema to previous version
+   - If due to LLM issue: Switch to fallback model
+   - If widespread: Enable circuit breaker to prevent cascading failures
+   
+   **Commands**:
+   ```bash
+   # Check current failure rate
+   curl -s http://prometheus:9090/api/v1/query?query='gbnf_validation_failure_total' | jq
+   
+   # Rollback schema
+   git revert <commit-hash>
+   git push
+   
+   # Force grammar regeneration
+   python scripts/regenerate_grammars.py --force
+   
+   # Restart agents
+   kubectl rollout restart deployment/gbnf-agents
+   ```
+   
+   ## Scenario 2: Grammar Generation Timeout
+   
+   **Symptoms**:
+   - Slow response times
+   - Timeout errors in logs
+   - Alert: SlowGrammarGeneration
+   
+   **Investigation**:
+   1. Identify slow schema: Check `gbnf_grammar_generation_seconds` by schema_name
+   2. Examine schema complexity: `python -m cli.gbnf_cli validate <schema_name>`
+   3. Check cache hit rate: Should be >80%
+   
+   **Resolution**:
+   - Simplify complex schema (reduce nesting, fewer fields)
+   - Increase cache size: Update `GRAMMAR_CACHE_SIZE` env var
+   - Pre-generate grammars at build time instead of runtime
+   
+   ## Scenario 3: Complete System Outage
+   
+   **Symptoms**:
+   - All agents unresponsive
+   - Health checks failing
+   
+   **Investigation**:
+   1. Check pod status: `kubectl get pods -l app=gbnf-agents`
+   2. Check logs: `kubectl logs -l app=gbnf-agents --tail=100`
+   3. Check dependencies: LLM API, database, etc.
+   
+   **Resolution**:
+   1. Scale down to zero: `kubectl scale deployment/gbnf-agents --replicas=0`
+   2. Identify root cause from logs
+   3. Apply fix (code change, config update, etc.)
+   4. Scale back up: `kubectl scale deployment/gbnf-agents --replicas=3`
+   5. Monitor closely for 30 minutes
+   ```
+
+**Deliverables**:
+- [ ] Backup automation
+- [ ] Rollback scripts tested
+- [ ] Incident response runbook
+- [ ] Disaster recovery drill completed
+
+---
+
+## Phase 8: Optimization & Future Enhancements
+**Duration**: Ongoing
+**Owner**: Entire Team
+
+### 8.1 Performance Optimization
+
+**Optimization Targets**:
+
+1. **Grammar Compilation Caching**
+   ```python
+   # gbnf/persistent_cache.py
+   import hashlib
+   import pickle
+   from pathlib import Path
+   from typing import Type
+   from pydantic import BaseModel
+   
+   class PersistentGrammarCache:
+       """Disk-based cache for generated grammars."""
+       
+       def __init__(self, cache_dir: Path = Path(".grammar_cache")):
+           self.cache_dir = cache_dir
+           self.cache_dir.mkdir(exist_ok=True)
+       
+       def get(self, model: Type[BaseModel]) -> str | None:
+           """Retrieve cached grammar for model."""
+           cache_key = self._get_cache_key(model)
+           cache_file = self.cache_dir / f"{cache_key}.gbnf"
+           
+           if cache_file.exists():
+               return cache_file.read_text()
+           return None
+       
+       def set(self, model: Type[BaseModel], grammar: str):
+           """Store grammar in cache."""
+           cache_key = self._get_cache_key(model)
+           cache_file = self.cache_dir / f"{cache_key}.gbnf"
+           cache_file.write_text(grammar)
+       
+       def _get_cache_key(self, model: Type[BaseModel]) -> str:
+           """Generate cache key from model definition."""
+           # Hash model schema to detect changes
+           schema_str = str(model.model_json_schema())
+           return hashlib.sha256(schema_str.encode()).hexdigest()
+   ```
+
+2. **Parallel Grammar Generation**
+   ```python
+   # scripts/pregenerate_grammars.py
+   import concurrent.futures
+   from pathlib import Path
+   from gbnf.generator import GBNFGenerator
+   from agents.schema_registry import registry
+   
+   def generate_all_grammars_parallel(output_dir: Path, max_workers: int = 4):
+       """Pre-generate all grammars in parallel."""
+       generator = GBNFGenerator()
+       
+       def generate_one(schema_name: str) -> tuple[str, str]:
+           schema = registry.get_latest(schema_name)
+           grammar = generator.from_pydantic(schema)
+           return schema_name, grammar
+       
+       with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+           futures = {
+               executor.submit(generate_one, name): name
+               for name in registry._schemas.keys()
+           }
+           
+           for future in concurrent.futures.as_completed(futures):
+               schema_name, grammar = future.result()
+               output_file = output_dir / f"{schema_name}.gbnf"
+               output_file.write_text(grammar)
+               print(f"✓ Generated {schema_name}")
+   ```
+
+3. **Grammar Minification**
+   ```python
+   # gbnf/optimizer.py
+   class GrammarOptimizer:
+       """Optimize GBNF grammars for size and efficiency."""
+       
+       @staticmethod
+       def minify(grammar: str) -> str:
+           """Remove unnecessary whitespace and comments."""
+           lines = grammar.split('\n')
+           minified = []
+           
+           for line in lines:
+               # Remove comments
+               line = line.split('#')[0]
+               # Strip whitespace
+               line = line.strip()
+               if line:
+                   minified.append(line)
+           
+           return '\n'.join(minified)
+       
+       @staticmethod
+       def deduplicate_rules(grammar: str) -> str:
+           """Merge identical rules."""
+           rules = {}
+           rule_mapping = {}
+           
+           for line in grammar.split('\n'):
+               if '::=' not in line:
+                   continue
+               
+               name, definition = line.split('::=', 1)
+               name = name.strip()
+               definition = definition.strip()
+               
+               # Check if this definition already exists
+               if definition in rules.values():
+                   # Find existing rule with same definition
+                   for existing_name, existing_def in rules.items():
+                       if existing_def == definition:
+                           rule_mapping[name] = existing_name
+                           break
+               else:
+                   rules[name] = definition
+           
+           # Rebuild grammar with deduplicated rules
+           # and update references
+           # ... (implementation details)
+           
+           return optimized_grammar
+   ```
+
+**Deliverables**:
+- [ ] Persistent cache implementation
+- [ ] Parallel generation scripts
+- [ ] Grammar optimizer
+- [ ] Performance benchmarks showing improvements
+
+### 8.2 Extended Type Support
+
+**Future Type Support Roadmap**:
+
+1. **Phase 1** (Weeks 1-2): Advanced Regex Patterns
+   - Full regex-to-GBNF compiler
+   - Support character classes, quantifiers, lookahead
+   - Test with common patterns (email, URL, UUID)
+
+2. **Phase 2** (Weeks 3-4): Numeric Ranges
+   - Efficient range patterns for large numeric ranges
+   - Support for float constraints
+   - Scientific notation support
+
+3. **Phase 3** (Weeks 5-6): Custom Validators
+   - Convert Pydantic field validators to GBNF
+   - Support for cross-field validation where possible
+   - Clear documentation of limitations
+
+4. **Phase 4** (Weeks 7-8): Union Types
+   - Discriminated unions with type field
+   - Tagged unions
+   - Complex union scenarios
+
+**Implementation Example**:
+```python
+# gbnf/advanced_types.py
+class AdvancedTypeMapper:
+    """Extended type support for complex patterns."""
+    
+    def map_regex_pattern(self, pattern: str) -> str:
+        """
+        Convert Python regex to GBNF with full feature support.
+        
+        Supported:
+        - Character classes: [a-z], [A-Z0-9]
+        - Quantifiers: *, +, ?, {n}, {n,m}
+        - Groups: (...)
+        - Alternation: |
+        - Anchors: ^, $ (converted to full-string match)
+        
+        Not supported:
+        - Lookahead/lookbehind
+        - Backreferences
+        - Conditional patterns
+        """
+        # Parse regex using Python's re module
+        import re
+        import sre_parse
+        
+        parsed = sre_parse.parse(pattern)
+        return self._convert_regex_tree(parsed)
+    
+    def _convert_regex_tree(self, tree) -> str:
+        """Recursively convert regex parse tree to GBNF."""
+        # Implementation details...
+        pass
+    
+    def map_numeric_range(self, min_val: int, max_val: int) -> str:
+        """
+        Generate efficient GBNF for numeric range.
+        
+        For small ranges (<100): enumerate all values
+        For large ranges: use pattern matching
+        """
+        if max_val - min_val < 100:
+            # Enumerate
+            return " | ".join(f'"{i}"' for i in range(min_val, max_val + 1))
+        else:
+            # Pattern matching
+            return self._generate_range_pattern(min_val, max_val)
+    
+    def _generate_range_pattern(self, min_val: int, max_val: int) -> str:
+        """Generate GBNF pattern for large numeric range."""
+        # Example: 1-999 becomes:
+        # [1-9] | [1-9][0-9] | [1-9][0-9][0-9]
+        # (Simplified - actual implementation more complex)
+        pass
+```
+
+**Deliverables**:
+- [ ] Advanced type mapper implementation
+- [ ] Comprehensive test suite for new types
+- [ ] Updated documentation
+- [ ] Migration guide for existing schemas
+
+### 8.3 Tooling Ecosystem
+
+**Developer Tools Roadmap**:
+
+1. **VS Code Extension** (Month 1)
+   - Syntax highlighting for GBNF
+   - Schema-to-grammar preview
+   - Inline validation errors
+   - Auto-completion for schema fields
+
+2. **Web-based Grammar Playground** (Month 2)
+   - Interactive grammar editor
+   - Live validation
+   - Test instance generator
+   - Share grammars via URL
+
+3. **Schema Migration Tool** (Month 3)
+   - Automated migration between versions
+   - Breaking change detection
+   - Migration code generation
+   - Rollback support
+
+4. **Performance Profiler** (Month 4)
+   - Identify slow schemas
+   - Grammar complexity analyzer
+   - Optimization suggestions
+   - Benchmarking suite
+
+**Example: Grammar Playground**
+```python
+# tools/playground/app.py
+from flask import Flask, render_template, request, jsonify
+from gbnf.generator import GBNFGenerator
+from pydantic import BaseModel
+import json
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('playground.html')
+
+@app.route('/api/generate', methods=['POST'])
+def generate_grammar():
+    """Generate GBNF from Pydantic schema code."""
+    try:
+        schema_code = request.json['schema']
+        
+        # Safely execute schema definition
+        namespace = {'BaseModel': BaseModel, '__name__': '__main__'}
+        exec(schema_code, namespace)
+        
+        # Find the model class
+        model_class = None
+        for name, obj in namespace.items():
+            if (isinstance(obj, type) and 
+                issubclass(obj, BaseModel) and 
+                obj is not BaseModel):
+                model_class = obj
+                break
+        
+        if not model_class:
+            return jsonify({'error': 'No Pydantic model found'}), 400
+        
+        # Generate grammar
+        generator = GBNFGenerator()
+        grammar = generator.from_pydantic(model_class)
+        
+        # Generate example instance
+        from tests.gbnf_test_gen import GBNFTestGenerator
+        test_gen = GBNFTestGenerator()
+        example = test_gen.generate_valid_instance(model_class)
+        
+        return jsonify({
+            'grammar': grammar,
+            'example': example.model_dump_json(indent=2),
+            'schema_json': model_class.model_json_schema()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/validate', methods=['POST'])
+def validate_instance():
+    """Validate JSON instance against schema."""
+    try:
+        schema_code = request.json['schema']
+        instance_json = request.json['instance']
+        
+        # Execute schema
+        namespace = {'BaseModel': BaseModel}
+        exec(schema_code, namespace)
+        
+        # Find model
+        model_class = [
+            obj for obj in namespace.values()
+            if isinstance(obj, type) and issubclass(obj, BaseModel)
+        ][0]
+        
+        # Validate
+        validated = model_class.model_validate_json(instance_json)
+        
+        return jsonify({
+            'valid': True,
+            'validated': validated.model_dump()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'valid': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }), 400
+```
+
+**Deliverables**:
+- [ ] VS Code extension (basic version)
+- [ ] Web playground deployed
+- [ ] Schema migration tool
+- [ ] Performance profiler
+
+### 8.4 Community & Ecosystem
+
+**Open Source Strategy**:
+
+1. **Extract Core Library** (Month 1)
+   - Create standalone `pydantic-gbnf` package
+   - MIT license
+   - PyPI publication
+   - Comprehensive README
+
+2. **Documentation Site** (Month 2)
+   - Full API docs (Sphinx)
+   - Tutorials and guides
+   - Example gallery
+   - Contributing guidelines
+
+3. **Community Building** (Month 3-6)
+   - GitHub discussions
+   - Monthly community calls
+   - Blog posts and tutorials
+   - Conference talks
+
+4. **Integration Examples** (Ongoing)
+   - LangChain integration guide
+   - LlamaIndex integration
+   - Ollama examples
+   - Local llama.cpp setup
+
+**Deliverables**:
+- [ ] Open source repository
+- [ ] PyPI package published
+- [ ] Documentation site live
+- [ ] Community engagement plan
+
+---
+
+## Success Metrics & KPIs
+
+### Technical Metrics
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Schema validation success rate | >99.5% | Prometheus counter |
+| Grammar generation time (P95) | <100ms | Prometheus histogram |
+| Cache hit rate | >90% | Prometheus counter ratio |
+| LLM generation time (P95) | <5s | Prometheus histogram |
+| System uptime | >99.9% | Uptime monitoring |
+| Zero data loss incidents | 100% | Incident tracking |
+
+### Business Metrics
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Agent-to-agent communication reliability | >99% | Error logs |
+| Development velocity (schema changes) | <1 hour from idea to production | Git metrics |
+| Developer satisfaction | >4/5 | Quarterly survey |
+| Schema evolution without breaking changes | >80% of updates | SCHEMA_CHANGELOG analysis |
+| Time to onboard new developer | <3 days | Onboarding tracking |
+
+### Quality Metrics
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Test coverage | >90% | Coverage reports |
+| Documentation coverage | 100% of public APIs | Doc linting |
+| Code review turnaround | <24 hours | GitHub metrics |
+| Production incidents | <1 per month | Incident log |
+
+---
+
+## Risk Management
+
+### Identified Risks & Mitigations
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| **GBNF not supported by LLM backend** | Medium | High | Implement robust fallback to prompt-based structured output |
+| **Grammar generation too slow for runtime** | Low | Medium | Pre-generate grammars at build time, implement caching |
+| **Schema changes break existing agents** | Medium | High | Comprehensive version management, automated migration tools |
+| **Team lacks GBNF expertise** | High | Medium | Extensive documentation, training program, external consulting if needed |
+| **Pydantic constraint not mappable to GBNF** | Medium | Low | Document limitations clearly, provide workarounds, extend generator incrementally |
+| **Performance degradation in production** | Low | High | Extensive load testing, monitoring, circuit breakers |
+| **Key developer leaves mid-project** | Low | High | Documentation, knowledge sharing, code reviews, pair programming |
+
+---
+
+## Appendices
+
+### Appendix A: Glossary
+
+- **GBNF**: Grammar-Based Neural Format - formal grammar specification for llama.cpp
+- **SSOT**: Single Source of Truth - the definitive data source
+- **Pydantic**: Python data validation library using type annotations
+- **LiteLLM**: Unified API for calling 100+ LLM providers
+- **LangGraph**: Framework for building stateful multi-agent applications
+- **Schema Evolution**: Process of changing schemas over time without breaking compatibility
+
+### Appendix B: References
+
+- [llama.cpp Grammar Documentation](https://github.com/ggerganov/llama.cpp/blob/master/grammars/README.md)
+- [Pydantic Documentation](https://docs.pydantic.dev/)
+- [LiteLLM Documentation](https://docs.litellm.ai/)
+- [LangGraph Documentation](https://python.langchain.com/docs/langgraph)
+- [Semantic Versioning](https://semver.org/)
+
+### Appendix C: Team Roles & Responsibilities
+
+**Lead Engineer**:
+- Overall architecture design
+- Core GBNF generator implementation
+- Schema registry and versioning
+- Code reviews and quality assurance
+- Technical documentation
+
+**Supporting Engineer 1**:
+- LiteLLM integration
+- LangGraph integration
+- Testing infrastructure
+- CI/CD pipeline
+- Monitoring and observability
+
+**Supporting Engineer 2** (if available):
+- Advanced type support
+- Performance optimization
+- Tooling development
+- Community engagement
+- Documentation
+
+**DevOps Engineer** (part-time):
+- Deployment automation
+- Infrastructure setup
+- Monitoring configuration
+- Incident response
+
+### Appendix D: Timeline Summary
+
+```
+Week 1:  Phase 0 - Project Setup
+Week 2:  Phase 1 - Core Generator (Part 1)
+Week 3:  Phase 1 - Core Generator (Part 2)
+Week 4:  Phase 2 - LiteLLM Integration
+Week 5:  Phase 3 - Schema Evolution
+Week 6:  Phase 4 - Pre-commit & CI
+Week 7:  Phase 5 - Testing & QA
+Week 8:  Phase 6 - Documentation
+Week 9:  Phase 7 - Deployment (Part 1)
+Week 10: Phase 7 - Deployment (Part 2)
+Ongoing: Phase 8 - Optimization & Future Work
+```
+
+### Appendix E: Quick Start Checklist
+
+**For New Developers**:
+```markdown
+- [ ] Clone repo
+- [ ] Install dependencies
+- [ ] Run test suite
+- [ ] Read architecture docs
+- [ ] Complete training modules
+- [ ] Create first schema
+- [ ] Submit first PR
+```
+
+**For Deploying to Production**:
+```markdown
+- [ ] All tests passing
+- [ ] Code coverage >90%
+- [ ] Documentation updated
+- [ ] SCHEMA_CHANGELOG.md updated
+- [ ] Grammars regenerated
+- [ ] Staging tests passing
+- [ ] Performance benchmarks acceptable
+- [ ] Rollback plan documented
+- [ ] On-call rotation scheduled
+```
+
+---
+
+## Conclusion
+
+This comprehensive plan provides a structured approach to implementing GBNF-enforced structured outputs for your multi-agent system. The phased approach allows for incremental progress while maintaining system stability.
+
+**Key Success Factors**:
+1. **Start Small**: Begin with Phase 0 and one simple schema
+2. **Test Extensively**: Never skip testing phases
+3. **Document

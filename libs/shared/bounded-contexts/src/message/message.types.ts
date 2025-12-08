@@ -18,3 +18,8 @@ export interface MessageWithConversation extends Message {
     title: string;
   };
 }
+
+/**
+ * Type alias for Message, used for chat messages in UI/state.
+ */
+export type ChatMessage = Message;

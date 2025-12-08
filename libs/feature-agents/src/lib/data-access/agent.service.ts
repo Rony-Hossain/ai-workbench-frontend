@@ -1,7 +1,7 @@
 import { fileSystemApi } from '@ai-workbench/feature-files';
 import { workbenchStore } from '@ai-workbench/state-workbench';
 import { getLLMProvider, LLMProvider } from '@ai-workbench/shared/llm-provider';
-import { chatDb, workspaceDb } from '@ai-workbench/shared/db';
+import { chatDb, workspaceDb } from '@ai-workbench/shared/database/client';
 import type { ChatMessage } from '@ai-workbench/bounded-contexts';
 
 
@@ -37,7 +37,7 @@ export const agentService = {
         id: `sys-${Date.now()}`,
         role: 'system',
         content: `⚠️ **Configuration Error**: No API Key found for **${activeId}**. Please open Settings and configure the provider.`,
-        timestamp: Date.now(),
+        timestamp: new Date(),
       });
       return;
     }
@@ -66,14 +66,14 @@ export const agentService = {
             id: `ai-${Date.now()}`,
             role: 'assistant',
             content: response.content,
-            timestamp: Date.now(),
+            timestamp: new Date(),
           });
         } catch (e: any) {
           addChatMessage({
             id: `ai-${Date.now()}`,
             role: 'assistant',
             content: `Error reading file: ${e.message}`,
-            timestamp: Date.now(),
+            timestamp: new Date(),
           });
         }
       }
@@ -106,7 +106,7 @@ export const agentService = {
           id: `ai-${Date.now()}`,
           role: 'assistant',
           content: `I have generated code for **${filename}**. Review the Permission Card to save it.`,
-          timestamp: Date.now(),
+          timestamp: new Date(),
         });
       }
 
@@ -123,7 +123,7 @@ export const agentService = {
           id: `ai-${Date.now()}`,
           role: 'assistant',
           content: response.content,
-          timestamp: Date.now(),
+          timestamp: new Date(),
         });
       }
 
@@ -132,7 +132,7 @@ export const agentService = {
         id: `sys-${Date.now()}`,
         role: 'system',
         content: `AI Error: ${err.message}`,
-        timestamp: Date.now(),
+        timestamp: new Date(),
       });
     } finally {
       setStreaming(false);

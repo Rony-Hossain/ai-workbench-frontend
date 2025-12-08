@@ -27,6 +27,7 @@ export interface WorkspaceSliceState {
 
 export interface WorkspaceSliceActions {
   selectWorkspace: (workspaceId: string) => void;
+  addAgent: (agent: Agent) => void;
 }
 
 export type WorkspaceSlice = WorkspaceSliceState & WorkspaceSliceActions;
@@ -53,5 +54,33 @@ export const createWorkspaceSlice: StateCreator<
   activeWorkspaceId: '1',
   selectWorkspace: (workspaceId) => {
     set({ activeWorkspaceId: workspaceId });
+  },
+  addAgent: (agent) => {
+    set((state) => {
+      const { activeWorkspaceId } = state;
+      if (!activeWorkspaceId) return {};
+      const workspace = state.workspaces[activeWorkspaceId];
+      if (!workspace) return {};
+
+      return {
+        workspaces: {
+          ...state.workspaces,
+          [activeWorkspaceId]: {
+            ...workspace,
+            agents: [...workspace.agents, agent],
+          },
+        },
+        agentStatuses: {
+          ...state.agentStatuses,
+          [agent.id]: {
+            agentId: agent.id,
+            kind: agent.kind as any,
+            label: agent.name,
+            state: 'idle',
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+    });
   },
 });

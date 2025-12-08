@@ -65,7 +65,6 @@ export class ProjectRepository extends BaseRepository<
       agents: agentsList.map(({ agent, role, hoursWorked }) => ({
         id: agent.id,
         name: agent.name,
-        role: agent.role as any,
         modelId: agent.modelId,
         systemPrompt: agent.systemPrompt,
         temperature: agent.temperature,

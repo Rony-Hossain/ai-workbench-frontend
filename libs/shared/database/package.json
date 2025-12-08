@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-workbench-frontend/bounded-contexts": "*",
     "drizzle-orm": "^0.30.0",
-    "better-sqlite3": "^9.4.0"
+    "better-sqlite3": "^12.5.0"
   },
   "devDependencies": {
     "drizzle-kit": "^0.20.0",

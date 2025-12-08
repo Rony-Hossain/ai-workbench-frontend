@@ -126,6 +126,10 @@ export default defineConfig({
         __dirname,
         '../../libs/shared/utils/src/index.ts'
       ),
+      '@ai-workbench/shared/database/client': path.resolve(
+        __dirname,
+        '../../libs/shared/database/src/client-browser.ts'
+      ),
       '@ai-workbench/shared/database': path.resolve(
         __dirname,
         '../../libs/shared/database/src/index.ts'
@@ -140,7 +144,7 @@ export default defineConfig({
       ),
       '@ai-workbench/bounded-contexts': path.resolve(
         __dirname,
-        '../../libs/bounded-contexts/src/index.ts'
+        '../../libs/shared/bounded-contexts/src/index.ts'
       ),
       '@ai-workbench/feature-cockpit': path.resolve(
         __dirname,

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { v4 as uuidv4 } from 'uuid';
 import { devtools, persist } from 'zustand/middleware';
 import {
   createPermissionSlice,
@@ -9,14 +10,15 @@ import {
   type WorkspaceSlice,
 } from './slices/workspace.slice';
 import { createProfileSlice, type ProfileSlice } from './slices/profile.slice';
-import { chatDb } from '@ai-workbench/shared/database';
+import { chatDb } from '@ai-workbench/shared/database/client';
 import type {
   ChatMessage,
   AgentStatus,
   WorkbenchTask,
   AgentGraphNode,
   AgentGraphEdge,
-} from '@ai-workbench/bounded-contexts';
+  Agent,
+} from '@ai-workbench/shared/bounded-contexts';
 
 export interface WorkbenchState
   extends PermissionSlice,
@@ -45,6 +47,7 @@ export interface WorkbenchState
   setAgentStatus: (agentId: string, state: AgentStatus['state']) => void;
   enqueueTask: (task: Partial<WorkbenchTask>) => string;
   setActiveConversationId: (id: string | null) => void;
+  addAgent: (agent: Agent) => void;
 }
 
 export const useWorkbenchStore = create<WorkbenchState>()(
@@ -112,6 +115,63 @@ export const useWorkbenchStore = create<WorkbenchState>()(
 
         // --- Actions ---
 
+        addAgent: (agent) =>
+          set((state) => ({
+            agentStatuses: {
+              ...state.agentStatuses,
+              [agent.id]: {
+                agentId: agent.id,
+                kind: agent.kind,
+                label: agent.name,
+                state: 'idle',
+                lastUpdated: Date.now(),
+              },
+            },
+          })),
+
+        addChatMessage: async (msg) => {
+          const normalized: ChatMessage = {
+            id: msg.id || uuidv4(), // Ensure a unique ID exists
+            ...msg,
+            timestamp:
+              msg.timestamp instanceof Date
+                ? msg.timestamp
+                : new Date(msg.timestamp),
+          };
+
+          set((s) => ({ chatMessages: [...s.chatMessages, normalized] }));
+
+          // Save to DB
+          const { activeConversationId } = get();
+          if (activeConversationId) {
+            await chatDb.addMessage(activeConversationId, normalized);
+          }
+        },
+
+        setStreaming: (streaming) => set({ isStreaming: streaming }),
+
+        setAgentStatus: (agentId, state) =>
+          set((s) => ({
+            agentStatuses: {
+              ...s.agentStatuses,
+              [agentId]: {
+                ...s.agentStatuses[agentId],
+                state,
+                lastUpdated: Date.now(),
+              },
+            },
+          })),
+
+        enqueueTask: (taskBase) => {
+          const id = uuidv4(); // Cast to ensure type conformity after spreading partial
+          const newTask: WorkbenchTask = {
+            id,
+            status: 'queued',
+            ...taskBase,
+          } as WorkbenchTask;
+          set((s) => ({ tasks: [newTask, ...s.tasks] }));
+          return id;
+        },
         // 1. Load Session from Dexie
         loadSession: async (workspacePath: string) => {
           const threads = await chatDb.listByWorkspace(workspacePath);
@@ -131,38 +191,6 @@ export const useWorkbenchStore = create<WorkbenchState>()(
             activeConversationId: activeThreadId,
             chatMessages: messages,
           });
-        },
-
-        addChatMessage: async (msg) => {
-          set((s) => ({ chatMessages: [...s.chatMessages, msg] }));
-
-          // Save to DB
-          const { activeConversationId } = get();
-          if (activeConversationId) {
-            await chatDb.addMessage(activeConversationId, msg);
-          }
-        },
-
-        setStreaming: (streaming) => set({ isStreaming: streaming }),
-
-        setAgentStatus: (agentId, state) =>
-          set((s) => ({
-            agentStatuses: {
-              ...s.agentStatuses,
-              [agentId]: {
-                ...s.agentStatuses[agentId],
-                state,
-                lastUpdated: Date.now(),
-              },
-            },
-          })),
-
-        enqueueTask: (taskBase) => {
-          const id = `task-${Date.now()}`;
-          // @ts-ignore
-          const newTask: WorkbenchTask = { id, status: 'queued', ...taskBase };
-          set((s) => ({ tasks: [...s.tasks, newTask] }));
-          return id;
         },
       }),
       {

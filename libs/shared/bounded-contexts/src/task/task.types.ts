@@ -38,3 +38,12 @@ export interface TaskStats {
   done: number;
   overdue: number;
 }
+
+/**
+ * WorkbenchTask interface for UI/state management
+ * Extends Task but allows partial for initial enqueueing
+ */
+export interface WorkbenchTask extends Task {
+  id: string;
+  status: 'queued' | TaskStatus; // Allow 'queued' state
+}

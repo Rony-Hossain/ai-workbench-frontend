@@ -1,13 +1,13 @@
 import { router, publicProcedure, protectedProcedure } from '../trpc/init';
-import { MessageRepository, ConversationRepository } from '@ai-workbench-frontend/database';
-import { AppError } from '@ai-workbench-frontend/trpc-server';
+import { MessageRepository, ConversationRepository } from '@ai-workbench/shared/database';
+import { AppError } from '@ai-workbench/shared/trpc-server';
 import {
   createMessageDto,
   getMessagesDto,
   searchMessagesDto,
   type Message,
   type MessageWithConversation,
-} from '@ai-workbench-frontend/bounded-contexts';
+} from '@ai-workbench/bounded-contexts';
 import { z } from 'zod';
 
 export const messageRouter = router({

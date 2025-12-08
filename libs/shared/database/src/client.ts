@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
 import * as schema from './schema';
+import { chatDb, workspaceDb } from './chat-db';
 
 export class DatabaseClient {
   private static instance: DatabaseClient;
@@ -31,3 +32,4 @@ export class DatabaseClient {
 }
 
 export const db = DatabaseClient.getInstance().db;
+export { chatDb, workspaceDb };

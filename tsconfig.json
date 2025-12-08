@@ -70,7 +70,7 @@
       "path": "./libs/feature-settings"
     },
     {
-      "path": "./libs/shared/db"
+      "path": "./libs/shared/database"
     },
     {
       "path": "./libs/shared/client-api"

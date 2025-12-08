@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { workspaceDb } from '@ai-workbench/shared/db';
+import { workspaceDb } from '@ai-workbench/shared/database/client';
 
 interface WorkspaceState {
   activePath: string | null;

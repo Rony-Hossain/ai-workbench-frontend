@@ -24,12 +24,14 @@ export const createProviderDto = z.object({
 });
 
 export type CreateProviderDto = z.infer<typeof createProviderDto>;
+export const CreateProviderSchema = createProviderDto;
 
 /**
  * Update provider DTO
  */
 export const updateProviderDto = createProviderDto.partial();
 export type UpdateProviderDto = z.infer<typeof updateProviderDto>;
+export const UpdateProviderSchema = updateProviderDto;
 
 /**
  * Get provider by ID DTO

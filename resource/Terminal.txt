@@ -1,0 +1,2207 @@
+# Distributed AI Workbench Terminal - Complete Implementation Guide
+
+## 📋 Table of Contents
+1. [Installation & Setup](#installation--setup)
+2. [Architecture Overview](#architecture-overview)
+3. [API Reference](#api-reference)
+4. [Multi-Agent Workflows](#multi-agent-workflows)
+5. [File Operations](#file-operations)
+6. [Error Handling](#error-handling)
+7. [Performance Optimization](#performance-optimization)
+
+---
+
+## 🚀 Installation & Setup
+
+### 1. Install Dependencies
+
+```bash
+# Inside WSL 2
+cd /path/to/your/electron-project
+
+# Core dependencies
+npm install electron node-pty xterm xterm-addon-fit
+
+# TypeScript definitions
+npm install -D @types/node @types/node-pty
+
+# Rebuild for Electron
+npx electron-rebuild -f -w node-pty
+```
+
+### 2. Verify WSL 2 Installation
+
+```bash
+# Check WSL version
+wsl --list --verbose
+
+# Should show VERSION 2, not VERSION 1
+# If not, convert: wsl --set-version <distro-name> 2
+```
+
+### 3. Project Structure
+
+```
+ai-workbench/
+├── src/
+│   ├── main/
+│   │   ├── main.ts              # Main process (Terminal Manager)
+│   │   └── preload.ts           # IPC bridge
+│   ├── renderer/
+│   │   ├── components/
+│   │   │   └── DistributedTerminal.tsx
+│   │   └── index.tsx
+├── projects/                     # AI project workspaces
+│   ├── project_123/
+│   └── project_456/
+├── package.json
+└── tsconfig.json
+```
+
+### 4. Electron Configuration
+
+**package.json**
+```json
+{
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "start": "electron ."
+  }
+}
+```
+
+**tsconfig.json**
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  }
+}
+```
+
+---
+
+## 🏗️ Architecture Overview
+
+### Component Hierarchy
+
+```
+┌─────────────────────────────────────────────┐
+│  Renderer Process (React UI)               │
+│  ┌───────────────────────────────────────┐ │
+│  │  DistributedTerminal Component        │ │
+│  │  - xterm.js display                   │ │
+│  │  - Agent selector                     │ │
+│  │  - Session management UI              │ │
+│  └───────────────────────────────────────┘ │
+└──────────────────┬──────────────────────────┘
+                   │ IPC (contextBridge)
+┌──────────────────▼──────────────────────────┐
+│  Preload Script (preload.ts)               │
+│  - Secure API bridge                       │
+│  - Event listeners                         │
+└──────────────────┬──────────────────────────┘
+                   │ IPC (ipcMain)
+┌──────────────────▼──────────────────────────┐
+│  Main Process (main.ts)                    │
+│  ┌───────────────────────────────────────┐ │
+│  │  DistributedTerminalManager           │ │
+│  │  - Session management                 │ │
+│  │  - Agent permissions                  │ │
+│  │  - PTY process lifecycle              │ │
+│  └───────────────────────────────────────┘ │
+└──────────────────┬──────────────────────────┘
+                   │ node-pty
+┌──────────────────▼──────────────────────────┐
+│  WSL 2 Linux Environment                   │
+│  - Bash shell                              │
+│  - File system access                      │
+│  - Docker, Git, npm, etc.                  │
+└────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+**Creating a Session:**
+```
+Agent → Renderer → IPC → Main Process → node-pty → WSL Shell
+                                           ↓
+                                       PTY Process
+                                           ↓
+                                   Output Stream ←─→ All Agents
+```
+
+---
+
+## 📚 API Reference
+
+### CREATE Operations
+
+#### `createSession(options: CreateSessionOptions)`
+
+Creates a new terminal session for a project.
+
+```typescript
+const result = await window.terminalAPI.createSession({
+  projectId: 'project_123',
+  name: 'Main Development Terminal',
+  description: 'Used by executor and planner agents',
+  cwd: '/home/user/projects/project_123',
+  cols: 80,
+  rows: 24,
+  shell: '/bin/bash',
+  agentId: 'executor-agent',
+  agentPermissions: {
+    canWrite: true,
+    canRead: true,
+    canKill: true,
+    canResize: true,
+  },
+});
+
+// Result: { success: true, sessionId: 'session_...', pid: 12345 }
+```
+
+**Use Cases:**
+- Executor agent initializing a new project
+- Creating isolated environments for testing
+- Spawning dedicated terminals for long-running processes
+
+---
+
+### READ Operations
+
+#### `getSession(sessionId: string)`
+
+Retrieves detailed information about a session.
+
+```typescript
+const result = await window.terminalAPI.getSession(sessionId);
+
+// Result structure:
+{
+  success: true,
+  session: {
+    id: 'session_...',
+    projectId: 'project_123',
+    pid: 12345,
+    agentIds: ['executor-agent', 'reviewer-agent'],
+    metadata: {
+      name: 'Main Development Terminal',
+      cwd: '/home/user/projects/project_123',
+      cols: 80,
+      rows: 24,
+      shell: '/bin/bash',
+    },
+    state: {
+      isActive: true,
+      isPaused: false,
+    },
+    createdAt: '2024-12-05T10:30:00Z',
+    lastActivityAt: '2024-12-05T10:35:00Z',
+    historyCount: 42,
+  }
+}
+```
+
+#### `listSessions(filters?: { projectId?: string; agentId?: string })`
+
+Lists all active sessions with optional filtering.
+
+```typescript
+// Get all sessions for a project
+const result = await window.terminalAPI.listSessions({
+  projectId: 'project_123'
+});
+
+// Get sessions where specific agent is present
+const result = await window.terminalAPI.listSessions({
+  agentId: 'executor-agent'
+});
+```
+
+#### `getHistory(sessionId: string, limit?: number)`
+
+Retrieves command history for a session.
+
+```typescript
+const result = await window.terminalAPI.getHistory(sessionId, 50);
+
+// Result:
+{
+  success: true,
+  history: [
+    {
+      timestamp: '2024-12-05T10:32:00Z',
+      agentId: 'executor-agent',
+      command: 'npm install express',
+      output: 'added 50 packages...',
+      exitCode: 0,
+    },
+    // ... more entries
+  ]
+}
+```
+
+---
+
+### UPDATE Operations
+
+#### `joinSession(options: JoinSessionOptions)`
+
+Adds an agent to an existing session.
+
+```typescript
+const result = await window.terminalAPI.joinSession({
+  sessionId: 'session_...',
+  agentId: 'reviewer-agent',
+  permissions: {
+    canWrite: false,  // Read-only access
+    canRead: true,
+    canKill: false,
+    canResize: false,
+  },
+});
+```
+
+**Use Cases:**
+- Reviewer agent joining to monitor executor's work
+- Debugger agent observing running processes
+- Planner agent checking implementation progress
+
+#### `write(sessionId: string, agentId: string, data: string)`
+
+Writes data to the terminal (executes commands).
+
+```typescript
+// Execute a command
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  'npm test\n'  // \n executes the command
+);
+
+// Send Ctrl+C
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  '\x03'  // Ctrl+C
+);
+
+// Navigate directory
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  'cd src/components\n'
+);
+```
+
+#### `pause(sessionId: string, agentId: string)`
+
+Temporarily halts command execution.
+
+```typescript
+// Pause before critical operation
+await window.terminalAPI.pause(sessionId, 'planner-agent');
+
+// Other agents can still read output, but cannot write
+```
+
+#### `resume(sessionId: string, agentId: string)`
+
+Resumes a paused session.
+
+```typescript
+await window.terminalAPI.resume(sessionId, 'planner-agent');
+```
+
+#### `updatePermissions(sessionId, agentId, permissions)`
+
+Modifies an agent's capabilities within a session.
+
+```typescript
+// Grant write permission to reviewer after approval
+await window.terminalAPI.updatePermissions(
+  sessionId,
+  'reviewer-agent',
+  { canWrite: true }
+);
+```
+
+---
+
+### DELETE Operations
+
+#### `kill(sessionId: string, agentId: string)`
+
+Terminates a session (requires `canKill` permission).
+
+```typescript
+await window.terminalAPI.kill(sessionId, 'executor-agent');
+```
+
+#### `clearHistory(sessionId: string, agentId: string)`
+
+Wipes command history for a session.
+
+```typescript
+await window.terminalAPI.clearHistory(sessionId, 'executor-agent');
+```
+
+---
+
+## 🤖 Multi-Agent Workflows
+
+### Workflow 1: Code Execution Pipeline
+
+```typescript
+// 1. Executor Agent: Create session and run tests
+const { sessionId } = await window.terminalAPI.createSession({
+  projectId: 'project_123',
+  name: 'Test Execution',
+  agentId: 'executor-agent',
+});
+
+await window.terminalAPI.write(sessionId, 'executor-agent', 'npm test\n');
+
+// 2. Reviewer Agent: Join to monitor test results
+await window.terminalAPI.joinSession({
+  sessionId,
+  agentId: 'reviewer-agent',
+  permissions: { canWrite: false, canRead: true },
+});
+
+// 3. Debugger Agent: Join if tests fail
+const history = await window.terminalAPI.getHistory(sessionId);
+const hasFailed = history.history.some(h => h.exitCode !== 0);
+
+if (hasFailed) {
+  await window.terminalAPI.joinSession({
+    sessionId,
+    agentId: 'debugger-agent',
+    permissions: { canWrite: true, canRead: true },
+  });
+  
+  await window.terminalAPI.write(
+    sessionId,
+    'debugger-agent',
+    'npm run test:debug\n'
+  );
+}
+```
+
+### Workflow 2: Concurrent Development
+
+```typescript
+// Planner creates project structure
+const { sessionId } = await window.terminalAPI.createSession({
+  projectId: 'new-feature',
+  name: 'Feature Setup',
+  agentId: 'planner-agent',
+});
+
+await window.terminalAPI.write(
+  sessionId,
+  'planner-agent',
+  'mkdir -p src/features/new-feature\n'
+);
+
+// Executor implements code
+await window.terminalAPI.joinSession({
+  sessionId,
+  agentId: 'executor-agent',
+});
+
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  'cd src/features/new-feature && touch index.tsx\n'
+);
+
+// Reviewer validates structure
+await window.terminalAPI.joinSession({
+  sessionId,
+  agentId: 'reviewer-agent',
+  permissions: { canWrite: false, canRead: true },
+});
+
+const sessions = await window.terminalAPI.listSessions({
+  projectId: 'new-feature'
+});
+console.log(`Active agents: ${sessions[0].agentIds.length}`);
+```
+
+### Workflow 3: Emergency Intervention
+
+```typescript
+// Long-running process started by executor
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  'npm run build:production\n'
+);
+
+// 5 minutes later, reviewer detects issue
+await window.terminalAPI.joinSession({
+  sessionId,
+  agentId: 'reviewer-agent',
+  permissions: { canWrite: true, canKill: true },
+});
+
+// Kill the process
+await window.terminalAPI.write(
+  sessionId,
+  'reviewer-agent',
+  '\x03'  // Send Ctrl+C
+);
+
+// Or kill entire session
+await window.terminalAPI.kill(sessionId, 'reviewer-agent');
+```
+
+---
+
+## 📁 File Operations
+
+### File Editing Workflow
+
+```typescript
+// 1. Create file
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  'cat > src/utils.ts << EOF\nexport const helper = () => {};\nEOF\n'
+);
+
+// 2. Edit file content
+await window.terminalAPI.write(
+  sessionId,
+  'executor-agent',
+  `cat > src/utils.ts << EOF
+export const add = (a: number, b: number) => a + b;
+export const subtract = (a: number, b: number) => a - b;
+EOF\n`
+);
+
+// 3. Verify changes
+await window.terminalAPI.write(
+  sessionId,
+  'reviewer-agent',
+  'cat src/utils.ts\n'
+);
+```
+
+### Batch Operations
+
+```typescript
+// Create multiple files
+const commands = [
+  'mkdir -p src/components src/hooks src/utils',
+  'touch src/components/Button.tsx',
+  'touch src/hooks/useAuth.ts',
+  'touch src/utils/helpers.ts',
+];
+
+for (const cmd of commands) {
+  await window.terminalAPI.write(
+    sessionId,
+    'planner-agent',
+    cmd + '\n'
+  );
+  // Wait for command to complete
+  await new Promise(resolve => setTimeout(resolve, 100));
+}
+```
+
+### File Deletion with Safety
+
+```typescript
+// Pause session for confirmation
+await window.terminalAPI.pause(sessionId, 'executor-agent');
+
+// Ask user/reviewer for approval
+const approved = await confirmDeletion('src/old-feature');
+
+if (approved) {
+  await window.terminalAPI.resume(sessionId, 'executor-agent');
+  await window.terminalAPI.write(
+    sessionId,
+    'executor-agent',
+    'rm -rf src/old-feature\n'
+  );
+} else {
+  await window.terminalAPI.resume(sessionId, 'executor-agent');
+}
+```
+
+---
+
+## ⚠️ Error Handling
+
+### Permission Errors
+
+```typescript
+try {
+  await window.terminalAPI.write(sessionId, 'reviewer-agent', 'rm -rf /\n');
+} catch (error) {
+  if (error.message.includes('does not have write permission')) {
+    console.log('Reviewer cannot execute commands - read-only access');
+    // Notify user or request permission upgrade
+  }
+}
+```
+
+### Session Not Found
+
+```typescript
+const result = await window.terminalAPI.getSession('invalid-session-id');
+
+if (!result.success) {
+  console.error('Session does not exist or has been terminated');
+  // Clean up UI, remove from session list
+}
+```
+
+### Process Crashes
+
+```typescript
+// Listen for unexpected exits
+window.terminalAPI.onExit((sessionId, event) => {
+  if (event.exitCode !== 0) {
+    console.error(`Session ${sessionId} crashed with code ${event.exitCode}`);
+    
+    // Notify all agents
+    notifyAgents({
+      type: 'SESSION_CRASHED',
+      sessionId,
+      exitCode: event.exitCode,
+    });
+    
+    // Optionally recreate session
+    recreateSession(sessionId);
+  }
+});
+```
+
+---
+
+## ⚡ Performance Optimization
+
+### 1. Rate Limiting Commands
+
+```typescript
+class CommandQueue {
+  private queue: Array<() => Promise<void>> = [];
+  private processing = false;
+  
+  async add(command: () => Promise<void>) {
+    this.queue.push(command);
+    if (!this.processing) {
+      await this.process();
+    }
+  }
+  
+  private async process() {
+    this.processing = true;
+    while (this.queue.length > 0) {
+      const cmd = this.queue.shift()!;
+      await cmd();
+      await new Promise(resolve => setTimeout(resolve, 50)); // 50ms delay
+    }
+    this.processing = false;
+  }
+}
+
+const queue = new CommandQueue();
+
+// Use queue for bulk operations
+commands.forEach(cmd => {
+  queue.add(() => window.terminalAPI.write(sessionId, agentId, cmd + '\n'));
+});
+```
+
+### 2. Debounce Resize Events
+
+```typescript
+let resizeTimeout: NodeJS.Timeout;
+
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    fitAddon.fit();
+    if (sessionId) {
+      window.terminalAPI.resize(
+        sessionId,
+        currentAgent,
+        terminal.cols,
+        terminal.rows
+      );
+    }
+  }, 250);
+});
+```
+
+### 3. Limit History Size
+
+```typescript
+// On main process
+const MAX_HISTORY = 1000; // Keep last 1000 commands
+
+private addToHistory(session: TerminalSession, command: string, output: string) {
+  session.history.push({ timestamp: new Date(), command, output });
+  
+  if (session.history.length > MAX_HISTORY) {
+    session.history.shift(); // Remove oldest
+  }
+}
+```
+
+---
+
+## 🔒 Security Best Practices
+
+1. **Validate Agent Permissions** before executing any command
+2. **Sanitize User Input** to prevent command injection
+3. **Use Allowlists** for critical operations (e.g., only allow certain shells)
+4. **Audit Logs** - log all commands with agent IDs and timestamps
+5. **Isolate Projects** - use separate WSL volumes per project
+
+---
+
+## 🎯 Next Steps
+
+1. Implement WebSocket support for real-time multi-machine collaboration
+2. Add session recording and playback
+3. Integrate with LangGraph for agent orchestration
+4. Build terminal sharing with external developers
+5. Add syntax highlighting for different file types
+
+For questions or issues, check the main process logs and ensure `electron-rebuild` was run successfully inside WSL 2.    
+
+
+Distributed Terminal UI Components: 
+import React, { useEffect, useRef, useState } from 'react';
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import 'xterm/css/xterm.css';
+
+// Agent colors for visual identification
+const AGENT_COLORS = {
+  'executor-agent': '#00ff00',
+  'planner-agent': '#00bfff',
+  'reviewer-agent': '#ff69b4',
+  'debugger-agent': '#ffa500',
+};
+
+const DistributedTerminal = () => {
+  const terminalRef = useRef(null);
+  const [terminal, setTerminal] = useState(null);
+  const [fitAddon, setFitAddon] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [projectId, setProjectId] = useState('project_123');
+  const [currentAgent, setCurrentAgent] = useState('executor-agent');
+  const [connectedAgents, setConnectedAgents] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [isPaused, setIsPaused] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  // Initialize xterm.js
+  useEffect(() => {
+    if (!terminalRef.current) return;
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Monaco, Menlo, "Courier New", monospace',
+      theme: {
+        background: '#1e1e1e',
+        foreground: '#d4d4d4',
+        cursor: '#00ff00',
+      },
+      rows: 24,
+      cols: 80,
+    });
+
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(terminalRef.current);
+    fit.fit();
+
+    setTerminal(term);
+    setFitAddon(fit);
+
+    // Handle terminal input
+    term.onData((data) => {
+      if (sessionId && !isPaused) {
+        window.terminalAPI.write(sessionId, currentAgent, data);
+      }
+    });
+
+    // Handle window resize
+    const handleResize = () => {
+      fit.fit();
+      if (sessionId) {
+        window.terminalAPI.resize(
+          sessionId,
+          currentAgent,
+          term.cols,
+          term.rows
+        );
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      term.dispose();
+    };
+  }, [terminalRef.current]);
+
+  // Setup event listeners
+  useEffect(() => {
+    if (!terminal) return;
+
+    const unsubscribers = [];
+
+    // Listen for terminal output
+    unsubscribers.push(
+      window.terminalAPI.onData((sid, data) => {
+        if (sid === sessionId) {
+          terminal.write(data);
+        }
+      })
+    );
+
+    // Listen for session exit
+    unsubscribers.push(
+      window.terminalAPI.onExit((sid, event) => {
+        if (sid === sessionId) {
+          terminal.writeln(`\r\n\x1b[31mSession exited with code ${event.exitCode}\x1b[0m`);
+          setSessionId(null);
+        }
+      })
+    );
+
+    // Listen for new sessions
+    unsubscribers.push(
+      window.terminalAPI.onSessionCreated((session) => {
+        setSessions((prev) => [...prev, session]);
+      })
+    );
+
+    // Listen for agent joins
+    unsubscribers.push(
+      window.terminalAPI.onAgentJoined(({ sessionId: sid, agentId }) => {
+        if (sid === sessionId) {
+          setConnectedAgents((prev) => [...prev, agentId]);
+          terminal.writeln(`\r\n\x1b[36m[System] Agent ${agentId} joined the session\x1b[0m`);
+        }
+      })
+    );
+
+    // Listen for agent leaves
+    unsubscribers.push(
+      window.terminalAPI.onAgentLeft(({ sessionId: sid, agentId }) => {
+        if (sid === sessionId) {
+          setConnectedAgents((prev) => prev.filter((a) => a !== agentId));
+          terminal.writeln(`\r\n\x1b[36m[System] Agent ${agentId} left the session\x1b[0m`);
+        }
+      })
+    );
+
+    // Listen for agent writes (show who is typing)
+    unsubscribers.push(
+      window.terminalAPI.onAgentWrite(({ sessionId: sid, agentId, data }) => {
+        if (sid === sessionId && agentId !== currentAgent) {
+          const color = AGENT_COLORS[agentId] || '#ffffff';
+          terminal.write(`\x1b[38;2;${hexToRgb(color)}m`);
+        }
+      })
+    );
+
+    // Listen for pause/resume
+    unsubscribers.push(
+      window.terminalAPI.onSessionPaused(({ sessionId: sid }) => {
+        if (sid === sessionId) {
+          setIsPaused(true);
+          terminal.writeln('\r\n\x1b[33m[System] Session paused\x1b[0m');
+        }
+      })
+    );
+
+    unsubscribers.push(
+      window.terminalAPI.onSessionResumed(({ sessionId: sid }) => {
+        if (sid === sessionId) {
+          setIsPaused(false);
+          terminal.writeln('\r\n\x1b[33m[System] Session resumed\x1b[0m');
+        }
+      })
+    );
+
+    return () => {
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [terminal, sessionId, currentAgent]);
+
+  // Helper function
+  const hexToRgb = (hex) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result
+      ? `${parseInt(result[1], 16)};${parseInt(result[2], 16)};${parseInt(result[3], 16)}`
+      : '255;255;255';
+  };
+
+  // Create new session
+  const createSession = async () => {
+    const result = await window.terminalAPI.createSession({
+      projectId,
+      name: `Session ${Date.now()}`,
+      description: 'Multi-agent collaborative terminal',
+      cwd: `/home/user/projects/${projectId}`,
+      cols: terminal?.cols || 80,
+      rows: terminal?.rows || 24,
+      agentId: currentAgent,
+      agentPermissions: {
+        canWrite: true,
+        canRead: true,
+        canKill: true,
+        canResize: true,
+      },
+    });
+
+    if (result.success) {
+      setSessionId(result.sessionId);
+      setConnectedAgents([currentAgent]);
+      terminal?.clear();
+      terminal?.writeln(`\x1b[32mSession ${result.sessionId} created!\x1b[0m`);
+      terminal?.writeln(`\x1b[36mConnected as: ${currentAgent}\x1b[0m`);
+      terminal?.writeln(`\x1b[36mPID: ${result.pid}\x1b[0m\r\n`);
+    } else {
+      alert(`Failed to create session: ${result.error}`);
+    }
+  };
+
+  // Join existing session
+  const joinSession = async (sid) => {
+    const result = await window.terminalAPI.joinSession({
+      sessionId: sid,
+      agentId: currentAgent,
+      permissions: {
+        canWrite: true,
+        canRead: true,
+        canKill: false,
+        canResize: true,
+      },
+    });
+
+    if (result.success) {
+      setSessionId(sid);
+      terminal?.clear();
+      terminal?.writeln(`\x1b[32mJoined session ${sid}\x1b[0m`);
+      terminal?.writeln(`\x1b[36mConnected as: ${currentAgent}\x1b[0m\r\n`);
+      
+      // Load session info
+      const info = await window.terminalAPI.getSession(sid);
+      if (info.success) {
+        setConnectedAgents(info.session.agentIds);
+      }
+    } else {
+      alert(`Failed to join session: ${result.error}`);
+    }
+  };
+
+  // Leave session
+  const leaveSession = async () => {
+    if (!sessionId) return;
+    
+    const result = await window.terminalAPI.leaveSession(sessionId, currentAgent);
+    if (result.success) {
+      setSessionId(null);
+      setConnectedAgents([]);
+      terminal?.clear();
+    }
+  };
+
+  // Kill session
+  const killSession = async () => {
+    if (!sessionId) return;
+    
+    const result = await window.terminalAPI.kill(sessionId, currentAgent);
+    if (result.success) {
+      setSessionId(null);
+      setConnectedAgents([]);
+      terminal?.clear();
+    } else {
+      alert(`Failed to kill session: ${result.error}`);
+    }
+  };
+
+  // Pause/Resume
+  const togglePause = async () => {
+    if (!sessionId) return;
+    
+    if (isPaused) {
+      await window.terminalAPI.resume(sessionId, currentAgent);
+    } else {
+      await window.terminalAPI.pause(sessionId, currentAgent);
+    }
+  };
+
+  // Load history
+  const loadHistory = async () => {
+    if (!sessionId) return;
+    
+    const result = await window.terminalAPI.getHistory(sessionId, 50);
+    if (result.success) {
+      setHistory(result.history);
+    }
+  };
+
+  // List sessions
+  const refreshSessions = async () => {
+    const result = await window.terminalAPI.listSessions({ projectId });
+    if (result.success) {
+      setSessions(result.sessions);
+    }
+  };
+
+  useEffect(() => {
+    refreshSessions();
+  }, [projectId]);
+
+  return (
+    <div className="flex h-screen bg-gray-900 text-white">
+      {/* Sidebar */}
+      <div className="w-80 bg-gray-800 p-4 overflow-y-auto border-r border-gray-700">
+        <h2 className="text-xl font-bold mb-4">AI Workbench Terminal</h2>
+        
+        {/* Agent Selector */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium mb-2">Current Agent</label>
+          <select
+            value={currentAgent}
+            onChange={(e) => setCurrentAgent(e.target.value)}
+            className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+          >
+            <option value="executor-agent">Executor Agent</option>
+            <option value="planner-agent">Planner Agent</option>
+            <option value="reviewer-agent">Reviewer Agent</option>
+            <option value="debugger-agent">Debugger Agent</option>
+          </select>
+        </div>
+
+        {/* Session Controls */}
+        <div className="mb-6">
+          <h3 className="text-lg font-semibold mb-3">Session Controls</h3>
+          <div className="space-y-2">
+            <button
+              onClick={createSession}
+              disabled={!!sessionId}
+              className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded font-medium"
+            >
+              Create New Session
+            </button>
+            <button
+              onClick={leaveSession}
+              disabled={!sessionId}
+              className="w-full bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded font-medium"
+            >
+              Leave Session
+            </button>
+            <button
+              onClick={killSession}
+              disabled={!sessionId}
+              className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded font-medium"
+            >
+              Kill Session
+            </button>
+            <button
+              onClick={togglePause}
+              disabled={!sessionId}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded font-medium"
+            >
+              {isPaused ? 'Resume' : 'Pause'}
+            </button>
+          </div>
+        </div>
+
+        {/* Current Session Info */}
+        {sessionId && (
+          <div className="mb-6 p-3 bg-gray-700 rounded">
+            <h3 className="text-sm font-semibold mb-2">Current Session</h3>
+            <p className="text-xs text-gray-300 break-all mb-2">{sessionId}</p>
+            <div className="text-xs">
+              <span className={`inline-block px-2 py-1 rounded ${isPaused ? 'bg-yellow-600' : 'bg-green-600'}`}>
+                {isPaused ? 'PAUSED' : 'ACTIVE'}
+              </span>
+            </div>
+            <div className="mt-3">
+              <p className="text-xs font-medium mb-1">Connected Agents:</p>
+              {connectedAgents.map((agent) => (
+                <div key={agent} className="text-xs flex items-center gap-2 mb-1">
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: AGENT_COLORS[agent] || '#fff' }}
+                  />
+                  {agent}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Available Sessions */}
+        <div>
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-lg font-semibold">Available Sessions</h3>
+            <button
+              onClick={refreshSessions}
+              className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+            >
+              Refresh
+            </button>
+          </div>
+          <div className="space-y-2">
+            {sessions.length === 0 ? (
+              <p className="text-sm text-gray-400">No sessions available</p>
+            ) : (
+              sessions.map((session) => (
+                <div
+                  key={session.id}
+                  className="p-3 bg-gray-700 rounded hover:bg-gray-600 cursor-pointer"
+                  onClick={() => session.id !== sessionId && joinSession(session.id)}
+                >
+                  <p className="text-sm font-medium truncate">{session.metadata.name}</p>
+                  <p className="text-xs text-gray-400 truncate">{session.id}</p>
+                  <div className="mt-1 flex items-center gap-2 text-xs">
+                    <span className="text-gray-400">{session.agentIds.length} agents</span>
+                    <span className={`px-2 py-0.5 rounded ${session.state.isActive ? 'bg-green-600' : 'bg-red-600'}`}>
+                      {session.state.isActive ? 'Active' : 'Inactive'}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* History */}
+        {sessionId && (
+          <div className="mt-6">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-lg font-semibold">Command History</h3>
+              <button
+                onClick={loadHistory}
+                className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+              >
+                Load
+              </button>
+            </div>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {history.map((entry, i) => (
+                <div key={i} className="p-2 bg-gray-700 rounded text-xs">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-medium">{entry.agentId}</span>
+                    <span className="text-gray-400">
+                      {new Date(entry.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <code className="text-green-400 break-all">{entry.command}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Terminal */}
+      <div className="flex-1 flex flex-col">
+        <div className="bg-gray-800 px-4 py-2 border-b border-gray-700">
+          <h3 className="text-sm font-medium">
+            Terminal {sessionId ? `(${sessionId.substring(0, 12)}...)` : '(No Active Session)'}
+          </h3>
+        </div>
+        <div className="flex-1 p-4">
+          <div
+            ref={terminalRef}
+            className="w-full h-full"
+            style={{ opacity: sessionId ? 1 : 0.5 }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default DistributedTerminal;    
+
+
+
+Preload Script(IPC Bridge) 
+
+// preload.ts - Distributed Terminal API Bridge
+import { contextBridge, ipcRenderer } from 'electron';
+
+// ============================================================
+// TYPE DEFINITIONS (shared with renderer)
+// ============================================================
+
+interface AgentPermissions {
+  canWrite: boolean;
+  canRead: boolean;
+  canKill: boolean;
+  canResize: boolean;
+}
+
+interface CreateSessionOptions {
+  projectId: string;
+  name: string;
+  description?: string;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+  shell?: string;
+  env?: Record<string, string>;
+  agentId: string;
+  agentPermissions?: Partial<AgentPermissions>;
+}
+
+interface JoinSessionOptions {
+  sessionId: string;
+  agentId: string;
+  permissions?: Partial<AgentPermissions>;
+}
+
+interface SessionInfo {
+  id: string;
+  projectId: string;
+  pid: number;
+  agentIds: string[];
+  metadata: {
+    name: string;
+    description?: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    shell: string;
+    env: Record<string, string>;
+  };
+  state: {
+    isActive: boolean;
+    isPaused: boolean;
+    exitCode?: number;
+    error?: string;
+  };
+  createdAt: Date;
+  lastActivityAt: Date;
+  historyCount: number;
+}
+
+interface CommandHistory {
+  timestamp: Date;
+  agentId: string;
+  command: string;
+  output: string;
+  exitCode?: number;
+}
+
+// ============================================================
+// DISTRIBUTED TERMINAL API
+// ============================================================
+
+const terminalAPI = {
+  // ============================================================
+  // CREATE Operations
+  // ============================================================
+  
+  createSession: (options: CreateSessionOptions): Promise<{
+    success: boolean;
+    sessionId?: string;
+    pid?: number;
+    metadata?: any;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:create', options);
+  },
+
+  // ============================================================
+  // READ Operations
+  // ============================================================
+  
+  getSession: (sessionId: string): Promise<{
+    success: boolean;
+    session?: SessionInfo;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:get', sessionId);
+  },
+
+  listSessions: (filters?: {
+    projectId?: string;
+    agentId?: string;
+  }): Promise<{
+    success: boolean;
+    sessions?: SessionInfo[];
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:list', filters);
+  },
+
+  getHistory: (sessionId: string, limit?: number): Promise<{
+    success: boolean;
+    history?: CommandHistory[];
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:history', sessionId, limit);
+  },
+
+  // ============================================================
+  // UPDATE Operations
+  // ============================================================
+  
+  joinSession: (options: JoinSessionOptions): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:join', options);
+  },
+
+  leaveSession: (sessionId: string, agentId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:leave', sessionId, agentId);
+  },
+
+  write: (sessionId: string, agentId: string, data: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:write', sessionId, agentId, data);
+  },
+
+  resize: (sessionId: string, agentId: string, cols: number, rows: number): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:resize', sessionId, agentId, cols, rows);
+  },
+
+  pause: (sessionId: string, agentId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:pause', sessionId, agentId);
+  },
+
+  resume: (sessionId: string, agentId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:resume', sessionId, agentId);
+  },
+
+  updatePermissions: (sessionId: string, agentId: string, permissions: Partial<AgentPermissions>): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:updatePermissions', sessionId, agentId, permissions);
+  },
+
+  clearHistory: (sessionId: string, agentId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:clearHistory', sessionId, agentId);
+  },
+
+  // ============================================================
+  // DELETE Operations
+  // ============================================================
+  
+  kill: (sessionId: string, agentId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    return ipcRenderer.invoke('terminal:kill', sessionId, agentId);
+  },
+
+  // ============================================================
+  // EVENT LISTENERS
+  // ============================================================
+  
+  // Listen for terminal output data
+  onData: (callback: (sessionId: string, data: string) => void) => {
+    const handler = (_: any, sessionId: string, data: string) => {
+      callback(sessionId, data);
+    };
+    ipcRenderer.on('terminal:data', handler);
+    return () => ipcRenderer.removeListener('terminal:data', handler);
+  },
+
+  // Listen for terminal exit
+  onExit: (callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void) => {
+    const handler = (_: any, sessionId: string, event: { exitCode: number; signal?: number }) => {
+      callback(sessionId, event);
+    };
+    ipcRenderer.on('terminal:exit', handler);
+    return () => ipcRenderer.removeListener('terminal:exit', handler);
+  },
+
+  // Listen for session creation
+  onSessionCreated: (callback: (session: SessionInfo) => void) => {
+    const handler = (_: any, session: SessionInfo) => {
+      callback(session);
+    };
+    ipcRenderer.on('terminal:sessionCreated', handler);
+    return () => ipcRenderer.removeListener('terminal:sessionCreated', handler);
+  },
+
+  // Listen for session killed
+  onSessionKilled: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:killed', handler);
+    return () => ipcRenderer.removeListener('terminal:killed', handler);
+  },
+
+  // Listen for agent join
+  onAgentJoined: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:agentJoined', handler);
+    return () => ipcRenderer.removeListener('terminal:agentJoined', handler);
+  },
+
+  // Listen for agent leave
+  onAgentLeft: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:agentLeft', handler);
+    return () => ipcRenderer.removeListener('terminal:agentLeft', handler);
+  },
+
+  // Listen for agent writes
+  onAgentWrite: (callback: (data: { sessionId: string; agentId: string; data: string; timestamp: Date }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string; data: string; timestamp: Date }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:agentWrite', handler);
+    return () => ipcRenderer.removeListener('terminal:agentWrite', handler);
+  },
+
+  // Listen for session paused
+  onSessionPaused: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:paused', handler);
+    return () => ipcRenderer.removeListener('terminal:paused', handler);
+  },
+
+  // Listen for session resumed
+  onSessionResumed: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:resumed', handler);
+    return () => ipcRenderer.removeListener('terminal:resumed', handler);
+  },
+
+  // Listen for resize events
+  onResized: (callback: (data: { sessionId: string; cols: number; rows: number }) => void) => {
+    const handler = (_: any, data: { sessionId: string; cols: number; rows: number }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:resized', handler);
+    return () => ipcRenderer.removeListener('terminal:resized', handler);
+  },
+
+  // Listen for permission updates
+  onPermissionsUpdated: (callback: (data: { sessionId: string; agentId: string; permissions: AgentPermissions }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string; permissions: AgentPermissions }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:permissionsUpdated', handler);
+    return () => ipcRenderer.removeListener('terminal:permissionsUpdated', handler);
+  },
+
+  // Listen for history cleared
+  onHistoryCleared: (callback: (data: { sessionId: string; agentId: string }) => void) => {
+    const handler = (_: any, data: { sessionId: string; agentId: string }) => {
+      callback(data);
+    };
+    ipcRenderer.on('terminal:historyCleared', handler);
+    return () => ipcRenderer.removeListener('terminal:historyCleared', handler);
+  },
+};
+
+// ============================================================
+// EXPOSE API TO RENDERER
+// ============================================================
+
+contextBridge.exposeInMainWorld('terminalAPI', terminalAPI);
+
+// ============================================================
+// TYPE DECLARATIONS
+// ============================================================
+
+declare global {
+  interface Window {
+    terminalAPI: typeof terminalAPI;
+  }
+}
+
+export { terminalAPI };
+
+
+
+WSL Terminal implementation   
+
+
+// main.ts - Distributed AI Workbench Terminal Manager
+import { app, ipcMain, BrowserWindow } from 'electron';
+import * as pty from 'node-pty';
+import * as os from 'os';
+import * as path from 'path';
+import { EventEmitter } from 'events';
+
+// ============================================================
+// TYPE DEFINITIONS
+// ============================================================
+
+interface TerminalSession {
+  id: string;
+  projectId: string;
+  ptyProcess: any;
+  agentIds: Set<string>;
+  metadata: SessionMetadata;
+  history: CommandHistory[];
+  state: SessionState;
+  createdAt: Date;
+  lastActivityAt: Date;
+}
+
+interface SessionMetadata {
+  name: string;
+  description?: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  shell: string;
+  env: Record<string, string>;
+}
+
+interface SessionState {
+  isActive: boolean;
+  isPaused: boolean;
+  exitCode?: number;
+  error?: string;
+}
+
+interface CommandHistory {
+  timestamp: Date;
+  agentId: string;
+  command: string;
+  output: string;
+  exitCode?: number;
+}
+
+interface AgentSession {
+  agentId: string;
+  sessionId: string;
+  joinedAt: Date;
+  permissions: AgentPermissions;
+}
+
+interface AgentPermissions {
+  canWrite: boolean;
+  canRead: boolean;
+  canKill: boolean;
+  canResize: boolean;
+}
+
+interface CreateSessionOptions {
+  projectId: string;
+  name: string;
+  description?: string;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+  shell?: string;
+  env?: Record<string, string>;
+  agentId: string;
+  agentPermissions?: Partial<AgentPermissions>;
+}
+
+interface JoinSessionOptions {
+  sessionId: string;
+  agentId: string;
+  permissions?: Partial<AgentPermissions>;
+}
+
+// ============================================================
+// DISTRIBUTED TERMINAL MANAGER
+// ============================================================
+
+class DistributedTerminalManager extends EventEmitter {
+  private sessions: Map<string, TerminalSession> = new Map();
+  private agentSessions: Map<string, AgentSession[]> = new Map();
+  private mainWindow: BrowserWindow | null = null;
+  private readonly MAX_HISTORY = 1000;
+  private readonly DEFAULT_PERMISSIONS: AgentPermissions = {
+    canWrite: true,
+    canRead: true,
+    canKill: false,
+    canResize: true,
+  };
+
+  constructor(window: BrowserWindow) {
+    super();
+    this.mainWindow = window;
+    this.setupIPCHandlers();
+  }
+
+  // ============================================================
+  // IPC HANDLERS
+  // ============================================================
+
+  private setupIPCHandlers(): void {
+    // CREATE: New terminal session
+    ipcMain.handle('terminal:create', async (_, options: CreateSessionOptions) => {
+      try {
+        const session = await this.createSession(options);
+        return {
+          success: true,
+          sessionId: session.id,
+          pid: session.ptyProcess.pid,
+          metadata: session.metadata,
+        };
+      } catch (error) {
+        console.error('[Terminal] Create failed:', error);
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // READ: Get session info
+    ipcMain.handle('terminal:get', async (_, sessionId: string) => {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        return { success: false, error: 'Session not found' };
+      }
+      return {
+        success: true,
+        session: this.serializeSession(session),
+      };
+    });
+
+    // READ: List all sessions
+    ipcMain.handle('terminal:list', async (_, filters?: { projectId?: string; agentId?: string }) => {
+      const sessions = Array.from(this.sessions.values())
+        .filter(s => !filters?.projectId || s.projectId === filters.projectId)
+        .filter(s => !filters?.agentId || s.agentIds.has(filters.agentId))
+        .map(s => this.serializeSession(s));
+      
+      return { success: true, sessions };
+    });
+
+    // UPDATE: Join existing session
+    ipcMain.handle('terminal:join', async (_, options: JoinSessionOptions) => {
+      try {
+        await this.joinSession(options);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // UPDATE: Leave session
+    ipcMain.handle('terminal:leave', async (_, sessionId: string, agentId: string) => {
+      try {
+        this.leaveSession(sessionId, agentId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // UPDATE: Write to terminal
+    ipcMain.handle('terminal:write', async (_, sessionId: string, agentId: string, data: string) => {
+      try {
+        await this.writeToSession(sessionId, agentId, data);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // UPDATE: Resize terminal
+    ipcMain.handle('terminal:resize', async (_, sessionId: string, agentId: string, cols: number, rows: number) => {
+      try {
+        await this.resizeSession(sessionId, agentId, cols, rows);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // UPDATE: Pause/Resume session
+    ipcMain.handle('terminal:pause', async (_, sessionId: string, agentId: string) => {
+      try {
+        this.pauseSession(sessionId, agentId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    ipcMain.handle('terminal:resume', async (_, sessionId: string, agentId: string) => {
+      try {
+        this.resumeSession(sessionId, agentId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // UPDATE: Update agent permissions
+    ipcMain.handle('terminal:updatePermissions', async (_, sessionId: string, agentId: string, permissions: Partial<AgentPermissions>) => {
+      try {
+        this.updateAgentPermissions(sessionId, agentId, permissions);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // READ: Get command history
+    ipcMain.handle('terminal:history', async (_, sessionId: string, limit?: number) => {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        return { success: false, error: 'Session not found' };
+      }
+      const history = session.history.slice(-(limit || 100));
+      return { success: true, history };
+    });
+
+    // DELETE: Kill terminal session
+    ipcMain.handle('terminal:kill', async (_, sessionId: string, agentId: string) => {
+      try {
+        await this.killSession(sessionId, agentId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+
+    // DELETE: Clear session history
+    ipcMain.handle('terminal:clearHistory', async (_, sessionId: string, agentId: string) => {
+      try {
+        this.clearHistory(sessionId, agentId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: (error as Error).message };
+      }
+    });
+  }
+
+  // ============================================================
+  // CREATE OPERATIONS
+  // ============================================================
+
+  private async createSession(options: CreateSessionOptions): Promise<TerminalSession> {
+    const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // WSL-specific shell configuration
+    const shell = options.shell || '/bin/bash';
+    const cwd = options.cwd || `/home/${process.env.USER || 'default'}/projects/${options.projectId}`;
+    const cols = options.cols || 80;
+    const rows = options.rows || 24;
+
+    const env = {
+      ...process.env,
+      ...options.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      WSLENV: 'ELECTRON_RUN_AS_NODE/w:',
+    };
+
+    console.log(`[Terminal] Creating session ${sessionId} for project ${options.projectId}`);
+
+    // Spawn PTY process with WSL configuration
+    const ptyProcess = pty.spawn(shell, ['--login'], {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env,
+      useConpty: os.platform() === 'win32',
+      encoding: 'utf8',
+    });
+
+    const session: TerminalSession = {
+      id: sessionId,
+      projectId: options.projectId,
+      ptyProcess,
+      agentIds: new Set([options.agentId]),
+      metadata: {
+        name: options.name,
+        description: options.description,
+        cwd,
+        cols,
+        rows,
+        shell,
+        env,
+      },
+      history: [],
+      state: {
+        isActive: true,
+        isPaused: false,
+      },
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+    };
+
+    // Setup PTY event handlers
+    this.setupPtyHandlers(session);
+
+    // Store session
+    this.sessions.set(sessionId, session);
+
+    // Register agent
+    this.registerAgent(sessionId, options.agentId, {
+      ...this.DEFAULT_PERMISSIONS,
+      ...options.agentPermissions,
+    });
+
+    // Emit event
+    this.emit('session:created', this.serializeSession(session));
+    this.broadcastToRenderer('terminal:sessionCreated', this.serializeSession(session));
+
+    return session;
+  }
+
+  // ============================================================
+  // READ OPERATIONS
+  // ============================================================
+
+  private serializeSession(session: TerminalSession) {
+    return {
+      id: session.id,
+      projectId: session.projectId,
+      pid: session.ptyProcess.pid,
+      agentIds: Array.from(session.agentIds),
+      metadata: session.metadata,
+      state: session.state,
+      createdAt: session.createdAt,
+      lastActivityAt: session.lastActivityAt,
+      historyCount: session.history.length,
+    };
+  }
+
+  // ============================================================
+  // UPDATE OPERATIONS
+  // ============================================================
+
+  private async joinSession(options: JoinSessionOptions): Promise<void> {
+    const session = this.sessions.get(options.sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (session.agentIds.has(options.agentId)) {
+      throw new Error('Agent already in session');
+    }
+
+    session.agentIds.add(options.agentId);
+    this.registerAgent(options.sessionId, options.agentId, {
+      ...this.DEFAULT_PERMISSIONS,
+      ...options.permissions,
+    });
+
+    console.log(`[Terminal] Agent ${options.agentId} joined session ${options.sessionId}`);
+
+    // Broadcast to all agents in session
+    this.broadcastToRenderer('terminal:agentJoined', {
+      sessionId: options.sessionId,
+      agentId: options.agentId,
+    });
+  }
+
+  private leaveSession(sessionId: string, agentId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    session.agentIds.delete(agentId);
+    this.unregisterAgent(sessionId, agentId);
+
+    console.log(`[Terminal] Agent ${agentId} left session ${sessionId}`);
+
+    // If no agents left, optionally kill session
+    if (session.agentIds.size === 0) {
+      console.log(`[Terminal] No agents remaining, killing session ${sessionId}`);
+      this.killSession(sessionId, 'system');
+    }
+
+    this.broadcastToRenderer('terminal:agentLeft', {
+      sessionId,
+      agentId,
+    });
+  }
+
+  private async writeToSession(sessionId: string, agentId: string, data: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (!this.hasPermission(sessionId, agentId, 'canWrite')) {
+      throw new Error('Agent does not have write permission');
+    }
+
+    if (session.state.isPaused) {
+      throw new Error('Session is paused');
+    }
+
+    if (!session.state.isActive) {
+      throw new Error('Session is not active');
+    }
+
+    session.ptyProcess.write(data);
+    session.lastActivityAt = new Date();
+
+    // Broadcast write event to other agents
+    this.broadcastToRenderer('terminal:agentWrite', {
+      sessionId,
+      agentId,
+      data,
+      timestamp: new Date(),
+    });
+  }
+
+  private async resizeSession(sessionId: string, agentId: string, cols: number, rows: number): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (!this.hasPermission(sessionId, agentId, 'canResize')) {
+      throw new Error('Agent does not have resize permission');
+    }
+
+    session.ptyProcess.resize(cols, rows);
+    session.metadata.cols = cols;
+    session.metadata.rows = rows;
+
+    console.log(`[Terminal] Session ${sessionId} resized to ${cols}x${rows}`);
+
+    this.broadcastToRenderer('terminal:resized', {
+      sessionId,
+      cols,
+      rows,
+    });
+  }
+
+  private pauseSession(sessionId: string, agentId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (!this.hasPermission(sessionId, agentId, 'canWrite')) {
+      throw new Error('Agent does not have pause permission');
+    }
+
+    session.state.isPaused = true;
+    console.log(`[Terminal] Session ${sessionId} paused by ${agentId}`);
+
+    this.broadcastToRenderer('terminal:paused', {
+      sessionId,
+      agentId,
+    });
+  }
+
+  private resumeSession(sessionId: string, agentId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (!this.hasPermission(sessionId, agentId, 'canWrite')) {
+      throw new Error('Agent does not have resume permission');
+    }
+
+    session.state.isPaused = false;
+    console.log(`[Terminal] Session ${sessionId} resumed by ${agentId}`);
+
+    this.broadcastToRenderer('terminal:resumed', {
+      sessionId,
+      agentId,
+    });
+  }
+
+  private updateAgentPermissions(sessionId: string, agentId: string, permissions: Partial<AgentPermissions>): void {
+    const agentSessions = this.agentSessions.get(agentId);
+    if (!agentSessions) {
+      throw new Error('Agent not found in any session');
+    }
+
+    const agentSession = agentSessions.find(as => as.sessionId === sessionId);
+    if (!agentSession) {
+      throw new Error('Agent not in specified session');
+    }
+
+    agentSession.permissions = {
+      ...agentSession.permissions,
+      ...permissions,
+    };
+
+    console.log(`[Terminal] Updated permissions for agent ${agentId} in session ${sessionId}`);
+
+    this.broadcastToRenderer('terminal:permissionsUpdated', {
+      sessionId,
+      agentId,
+      permissions: agentSession.permissions,
+    });
+  }
+
+  private clearHistory(sessionId: string, agentId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (!this.hasPermission(sessionId, agentId, 'canWrite')) {
+      throw new Error('Agent does not have permission to clear history');
+    }
+
+    session.history = [];
+    console.log(`[Terminal] History cleared for session ${sessionId}`);
+
+    this.broadcastToRenderer('terminal:historyCleared', {
+      sessionId,
+      agentId,
+    });
+  }
+
+  // ============================================================
+  // DELETE OPERATIONS
+  // ============================================================
+
+  private async killSession(sessionId: string, agentId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (agentId !== 'system' && !this.hasPermission(sessionId, agentId, 'canKill')) {
+      throw new Error('Agent does not have kill permission');
+    }
+
+    console.log(`[Terminal] Killing session ${sessionId}`);
+
+    session.state.isActive = false;
+    session.ptyProcess.kill();
+
+    // Clean up agent registrations
+    session.agentIds.forEach(aid => {
+      this.unregisterAgent(sessionId, aid);
+    });
+
+    this.sessions.delete(sessionId);
+
+    this.broadcastToRenderer('terminal:killed', {
+      sessionId,
+      agentId,
+    });
+  }
+
+  // ============================================================
+  // PTY EVENT HANDLERS
+  // ============================================================
+
+  private setupPtyHandlers(session: TerminalSession): void {
+    let currentCommand = '';
+    let currentOutput = '';
+
+    // Handle data output
+    session.ptyProcess.onData((data: string) => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('terminal:data', session.id, data);
+      }
+
+      // Track output for history
+      currentOutput += data;
+
+      // Detect command completion (basic heuristic)
+      if (data.includes('\n') && currentCommand) {
+        this.addToHistory(session, currentCommand, currentOutput);
+        currentCommand = '';
+        currentOutput = '';
+      }
+
+      session.lastActivityAt = new Date();
+    });
+
+    // Handle exit
+    session.ptyProcess.onExit((event: { exitCode: number; signal?: number }) => {
+      console.log(`[Terminal] Session ${session.id} exited:`, event);
+      
+      session.state.isActive = false;
+      session.state.exitCode = event.exitCode;
+
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('terminal:exit', session.id, event);
+      }
+
+      // Clean up
+      session.agentIds.forEach(aid => {
+        this.unregisterAgent(session.id, aid);
+      });
+      this.sessions.delete(session.id);
+
+      this.emit('session:exited', {
+        sessionId: session.id,
+        exitCode: event.exitCode,
+      });
+    });
+  }
+
+  // ============================================================
+  // HELPER METHODS
+  // ============================================================
+
+  private registerAgent(sessionId: string, agentId: string, permissions: AgentPermissions): void {
+    const agentSession: AgentSession = {
+      agentId,
+      sessionId,
+      joinedAt: new Date(),
+      permissions,
+    };
+
+    if (!this.agentSessions.has(agentId)) {
+      this.agentSessions.set(agentId, []);
+    }
+
+    this.agentSessions.get(agentId)!.push(agentSession);
+  }
+
+  private unregisterAgent(sessionId: string, agentId: string): void {
+    const sessions = this.agentSessions.get(agentId);
+    if (sessions) {
+      const filtered = sessions.filter(s => s.sessionId !== sessionId);
+      if (filtered.length === 0) {
+        this.agentSessions.delete(agentId);
+      } else {
+        this.agentSessions.set(agentId, filtered);
+      }
+    }
+  }
+
+  private hasPermission(sessionId: string, agentId: string, permission: keyof AgentPermissions): boolean {
+    const agentSessions = this.agentSessions.get(agentId);
+    if (!agentSessions) return false;
+
+    const agentSession = agentSessions.find(s => s.sessionId === sessionId);
+    return agentSession ? agentSession.permissions[permission] : false;
+  }
+
+  private addToHistory(session: TerminalSession, command: string, output: string): void {
+    const entry: CommandHistory = {
+      timestamp: new Date(),
+      agentId: Array.from(session.agentIds)[0], // Last active agent
+      command,
+      output,
+    };
+
+    session.history.push(entry);
+
+    // Limit history size
+    if (session.history.length > this.MAX_HISTORY) {
+      session.history.shift();
+    }
+  }
+
+  private broadcastToRenderer(channel: string, data: any): void {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send(channel, data);
+    }
+  }
+
+  // ============================================================
+  // CLEANUP
+  // ============================================================
+
+  public dispose(): void {
+    console.log('[Terminal] Disposing all sessions');
+    
+    this.sessions.forEach((session) => {
+      try {
+        session.ptyProcess.kill();
+      } catch (error) {
+        console.error(`[Terminal] Error killing session ${session.id}:`, error);
+      }
+    });
+
+    this.sessions.clear();
+    this.agentSessions.clear();
+  }
+}
+
+// ============================================================
+// APP INITIALIZATION
+// ============================================================
+
+let terminalManager: DistributedTerminalManager | null = null;
+
+app.whenReady().then(() => {
+  const mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  mainWindow.loadFile('index.html');
+
+  terminalManager = new DistributedTerminalManager(mainWindow);
+
+  // Monitor system resources
+  terminalManager.on('session:created', (session) => {
+    console.log(`[System] New session created:`, session);
+  });
+
+  terminalManager.on('session:exited', (event) => {
+    console.log(`[System] Session exited:`, event);
+  });
+});
+
+app.on('before-quit', () => {
+  terminalManager?.dispose();
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+export { DistributedTerminalManager };

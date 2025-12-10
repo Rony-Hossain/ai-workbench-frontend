@@ -6,7 +6,8 @@
     "start": "nx serve",
     "build": "nx build",
     "test": "nx test",
-    "wb-d": "nx serve-electron workbench-desktop"
+    "wb-d": "nx serve-electron workbench-desktop",
+    "postinstall": "electron-rebuild -f"
   },
   "private": true,
   "dependencies": {

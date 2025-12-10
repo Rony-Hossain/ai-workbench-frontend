@@ -3,20 +3,35 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { readdirSync, statSync } from 'fs';
 import * as os from 'os';
-// import { spawn, ChildProcess } from 'child_process'; // <--- DELETE THIS
-import * as pty from 'node-pty'; // <--- USE THIS
+import * as pty from 'node-pty';
 import { createIPCHandler } from 'electron-trpc/main';
 import { appRouter } from './router';
 
+// -----------------------------------------------------------------------------
+// CRITICAL FIX: LINUX / WSL2 RENDERING FLAGS
+// These MUST be set before app.on('ready') or they do nothing.
+// -----------------------------------------------------------------------------
+if (process.platform === 'linux') {
+  // 1. Stop looking for a GPU
+  app.disableHardwareAcceleration();
+
+  // 2. Force the "Nuclear Option" for rendering
+  // This forces Chromium to use the CPU (SwiftShader) for everything.
+  // It fixes the "Exiting GPU process due to errors" crash.
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('no-sandbox'); // Essential for Docker/Root users
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('disable-gpu-rasterization');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('--in-process-gpu');
+  app.commandLine.appendSwitch('use-gl', 'swiftshader');
+}
+// -----------------------------------------------------------------------------
+
 let mainWindow: BrowserWindow | null = null;
-// Store PTY processes, not generic ChildProcesses
 const terminals: Record<string, pty.IPty> = {};
 
 function createWindow() {
-  // STABILITY FIX: Disable GPU acceleration to prevent WSLg crashes
-  app.commandLine.appendSwitch('disable-gpu');
-  app.commandLine.appendSwitch('disable-software-rasterizer');
-
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -24,19 +39,18 @@ function createWindow() {
     backgroundColor: '#0a0a0a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      sandbox: false,
+      sandbox: false, 
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  const startUrl =
-    process.env.NX_NEXT_DEV_SERVER_URL || 'http://localhost:4200';
+  const startUrl = process.env.NX_NEXT_DEV_SERVER_URL || 'http://localhost:4200';
 
   // 1. Initialize tRPC
   createIPCHandler({ router: appRouter, windows: [mainWindow] });
 
-  // 2. Load URL (ONCE)
+  // 2. Load URL
   mainWindow.loadURL(startUrl);
 
   mainWindow.on('closed', () => (mainWindow = null));
@@ -44,15 +58,11 @@ function createWindow() {
 
 // --- TERMINAL HANDLER (Real PTY) ---
 
-// 1. CREATE
-// 1. CREATE (Fixed Safe Destructuring)
 ipcMain.handle('term:create', (_, args) => {
-  // CRITICAL FIX: Handle undefined args safely
-  const { cwd, cols, rows } = args || {}; 
+  const { cwd, cols, rows } = args || {};
 
-  const shell = process.env['SHELL'] || 'bash'; // Default to User's Shell in WSL
+  const shell = process.env['SHELL'] || 'bash';
   const targetCwd = cwd || process.env.HOME;
-
   const id = `term-${Date.now()}`;
 
   try {
@@ -87,7 +97,6 @@ ipcMain.handle('term:create', (_, args) => {
   }
 });
 
-// 2. WRITE
 ipcMain.handle('term:write', (_, { id, data }) => {
   const ptyProcess = terminals[id];
   if (ptyProcess) {
@@ -95,8 +104,6 @@ ipcMain.handle('term:write', (_, { id, data }) => {
   }
 });
 
-// 3. RESIZE (CRITICAL for UX)
-// If you don't do this, text wraps weirdly when you resize the panel
 ipcMain.handle('term:resize', (_, { id, cols, rows }) => {
   const ptyProcess = terminals[id];
   if (ptyProcess) {
@@ -108,7 +115,6 @@ ipcMain.handle('term:resize', (_, { id, cols, rows }) => {
   }
 });
 
-// 4. KILL
 ipcMain.handle('term:kill', (_, id) => {
   const ptyProcess = terminals[id];
   if (ptyProcess) {
@@ -119,7 +125,7 @@ ipcMain.handle('term:kill', (_, id) => {
 });
 
 // --- FILE & APP HANDLERS ---
-// TODO: Move this to tRPC Router later to clean up main.ts
+
 const readDirRecursive = (dirPath: string): any => {
   const name = path.basename(dirPath);
   try {
@@ -135,7 +141,7 @@ const readDirRecursive = (dirPath: string): any => {
 };
 
 ipcMain.handle('files:read-dir', async (_, dirPath) => {
-  const target = dirPath || process.env.HOME; // Default to HOME in Linux
+  const target = dirPath || process.env.HOME;
   return readDirRecursive(target);
 });
 

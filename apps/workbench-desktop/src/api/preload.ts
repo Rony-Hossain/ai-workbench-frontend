@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { exposeElectronTRPC } from 'electron-trpc/main';
+import type {
+  TerminalAgentEventPayload,
+  TerminalBridgeApi,
+} from '@ai-workbench/shared/electron-bridge';
+import type { TerminalSession } from '@ai-workbench/feature-terminal';
 
 // 1. Enable the tRPC Bridge (Crucial for AI/DB)
 // Call immediately so the global is available as soon as the preload runs.
@@ -17,21 +22,25 @@ const api = {
     openDirectory: () => ipcRenderer.invoke('dialog:open-directory'),
   },
   terminal: {
-    create: (cwd?: string) => ipcRenderer.invoke('term:create', { cwd }),
+    create: async (cwd?: string) => {
+      const result = (await ipcRenderer.invoke('terminal:create', {
+        cwd,
+      })) as { id?: string };
+      return result?.id ?? '';
+    },
     write: (id: string, data: string) =>
-      ipcRenderer.invoke('term:write', { id, data }),
+      ipcRenderer.invoke('terminal:write', { id, data }),
     resize: (id: string, cols: number, rows: number) =>
-      ipcRenderer.invoke('term:resize', { id, cols, rows }),
+      ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
     onData: (callback: (id: string, data: string) => void) => {
-      // @ts-ignore - Electron types can be fussy with 'event'
       const subscription = (
-        _event: any,
-        payload: { id: string; data: string }
+        _event: Electron.IpcRendererEvent,
+        payload: { id: string; data: string },
       ) => {
         callback(payload.id, payload.data);
       };
-      ipcRenderer.on('term:data', subscription);
-      return () => ipcRenderer.off('term:data', subscription);
+      ipcRenderer.on('terminal:data', subscription);
+      return () => ipcRenderer.off('terminal:data', subscription);
     },
   },
   app: {
@@ -41,5 +50,77 @@ const api = {
   },
 };
 
+// 3. Define Advanced Terminal API (For Cyberpunk UI)
+const terminalAPI: TerminalBridgeApi = {
+  listSessions: async (filter) => {
+    const sessions = (await ipcRenderer.invoke(
+      'terminal:list',
+      filter,
+    )) as TerminalSession[];
+    return { success: true, sessions };
+  },
+  createSession: async (args) => {
+    const session = (await ipcRenderer.invoke(
+      'terminal:create',
+      args,
+    )) as { id?: string; pid?: number };
+    return {
+      success: typeof session?.id === 'string',
+      sessionId: session?.id,
+      pid: session?.pid,
+    };
+  },
+  joinSession: async ({ sessionId, agentId }) => {
+    await ipcRenderer.invoke('terminal:join', { id: sessionId, agentId });
+    return { success: true };
+  },
+  leaveSession: async ({ sessionId, agentId }) => {
+    await ipcRenderer.invoke('terminal:leave', { id: sessionId, agentId });
+    return { success: true };
+  },
+  kill: async (sessionId) => {
+    await ipcRenderer.invoke('terminal:kill', sessionId);
+  },
+  write: async (sessionId, _agentId, data) => {
+    await ipcRenderer.invoke('terminal:write', { id: sessionId, data });
+  },
+  resize: async (sessionId, _agentId, cols, rows) => {
+    await ipcRenderer.invoke('terminal:resize', { id: sessionId, cols, rows });
+  },
+  onData: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { id: string; data: string },
+    ) => callback(payload.id, payload.data);
+    ipcRenderer.on('terminal:data', listener);
+    return () => ipcRenderer.off('terminal:data', listener);
+  },
+  onSessionCreated: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: TerminalSession,
+    ) => callback(payload);
+    ipcRenderer.on('terminal:created', listener);
+    return () => ipcRenderer.off('terminal:created', listener);
+  },
+  onAgentJoined: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: TerminalAgentEventPayload,
+    ) => callback(payload);
+    ipcRenderer.on('terminal:agent-joined', listener);
+    return () => ipcRenderer.off('terminal:agent-joined', listener);
+  },
+  onAgentLeft: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: TerminalAgentEventPayload,
+    ) => callback(payload);
+    ipcRenderer.on('terminal:agent-left', listener);
+    return () => ipcRenderer.off('terminal:agent-left', listener);
+  },
+};
+
 // 3. Expose Manual API
 contextBridge.exposeInMainWorld('electron', api);
+contextBridge.exposeInMainWorld('terminalAPI', terminalAPI);

@@ -2,10 +2,9 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { providers, agents, type ProviderRow } from '../schema';
 import { BaseRepository } from './base.repository';
-import type { 
-  Provider, 
+import type {
+  Provider,
   ProviderConnectionTest,
-  CreateProviderDto 
 } from '@ai-workbench-frontend/bounded-contexts';
 
 export class ProviderRepository extends BaseRepository<
@@ -21,25 +20,32 @@ export class ProviderRepository extends BaseRepository<
     return {
       id: row.id,
       name: row.name,
-      type: row.type as Provider['type'],
+      label: row.label ?? undefined,
+      type: row.type,
       endpoint: row.endpoint ?? undefined,
-      apiKey: row.apiKey ?? undefined,
-      models: row.models,
-      metadata: row.metadata ?? undefined,
+      isConfigured: Boolean(row.apiKey),
+      models: row.models ?? [],
+      workspaceScope: row.workspaceScope ?? 'global',
+      status: row.status ?? 'offline',
+      lastChecked: row.lastChecked ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
   }
 
   protected toDatabase(domain: Partial<Provider>): Partial<ProviderRow> {
+    const domainWithKey = domain as Partial<Provider> & { apiKey?: string };
     return {
       id: domain.id,
       name: domain.name,
-      type: domain.type as any,
+      label: domain.label ?? null,
+      type: domain.type,
       endpoint: domain.endpoint ?? null,
-      apiKey: domain.apiKey ?? null,
-      models: domain.models as any,
-      metadata: domain.metadata ?? null,
+      apiKey: domainWithKey.apiKey ?? null,
+      models: domain.models ?? [],
+      workspaceScope: domain.workspaceScope ?? 'global',
+      status: domain.status ?? 'offline',
+      lastChecked: domain.lastChecked ?? null,
     };
   }
 

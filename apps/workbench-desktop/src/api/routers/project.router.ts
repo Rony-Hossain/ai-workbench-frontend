@@ -9,8 +9,11 @@ import {
   type Project,
   type ProjectWithAgents,
   type ProjectStats,
+  RoleMappingSchema,
 } from '@ai-workbench-frontend/bounded-contexts';
 import { z } from 'zod';
+import { providers, roleMappings } from '@ai-workbench/shared/database';
+import { eq } from 'drizzle-orm';
 
 export const projectRouter = router({
   /**
@@ -163,5 +166,48 @@ export const projectRouter = router({
 
       // Note: Agents and tasks are cascade deleted via foreign keys
       return { success: true, deletedId: input.id };
+    }),
+
+  getRoleMappings: protectedProcedure
+    .input(z.object({ workspaceId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db
+        .select({
+          role: roleMappings.role,
+          providerId: roleMappings.providerId,
+          modelId: roleMappings.modelId,
+          providerName: providers.name,
+          providerType: providers.type,
+        })
+        .from(roleMappings)
+        .leftJoin(providers, eq(roleMappings.providerId, providers.id))
+        .where(eq(roleMappings.workspaceId, input.workspaceId));
+
+      return rows;
+    }),
+
+  updateRoleMapping: protectedProcedure
+    .input(RoleMappingSchema)
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db
+        .insert(roleMappings)
+        .values({
+          workspaceId: input.workspaceId,
+          role: input.role,
+          providerId: input.providerId,
+          modelId: input.modelId,
+          fallbackModelId: input.fallbackModelId,
+        })
+        .onConflictDoUpdate({
+          target: [roleMappings.workspaceId, roleMappings.role],
+          set: {
+            providerId: input.providerId,
+            modelId: input.modelId,
+            fallbackModelId: input.fallbackModelId,
+            updatedAt: new Date(),
+          },
+        });
+
+      return { success: true };
     }),
 });

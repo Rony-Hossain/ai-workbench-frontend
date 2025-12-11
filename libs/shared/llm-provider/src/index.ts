@@ -3,6 +3,7 @@ import { OllamaProvider } from './lib/providers/ollama.provider';
 import { LLMProvider } from './lib/llm.types';
 
 export * from './lib/llm.types';
+export * from './lib/providers/local-generic.provider';
 
 export function getLLMProvider(providerId: string): LLMProvider {
   switch (providerId) {

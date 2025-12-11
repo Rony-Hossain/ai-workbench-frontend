@@ -1,142 +1,195 @@
+import { z } from 'zod';
 import { fileSystemApi } from '@ai-workbench/feature-files';
+import { gbnfGenerator } from '@ai-workbench/shared/ai-engine';
+import { chatDb, db } from '@ai-workbench/shared/database/client';
+import { roleMappings } from '@ai-workbench/shared/database';
+import { getLLMProvider } from '@ai-workbench/shared/llm-provider';
 import { workbenchStore } from '@ai-workbench/state-workbench';
-import { getLLMProvider, LLMProvider } from '@ai-workbench/shared/llm-provider';
-import { chatDb, workspaceDb } from '@ai-workbench/shared/database/client';
-import type { ChatMessage } from '@ai-workbench/bounded-contexts';
+import { eq, and } from 'drizzle-orm';
 
+const AgentActionSchema = z.object({
+  thought: z.string(),
+  tool: z.enum(['read_file', 'write_file', 'run_command', 'final_answer']),
+  parameters: z.object({
+    path: z.string().optional(),
+    content: z.string().optional(),
+    command: z.string().optional(),
+  }),
+});
 
-async function getActiveConversationId(workspacePath: string): Promise<string> {
-  // 1. Try to find existing threads
-  const threads = await chatDb.listByWorkspace(workspacePath);
-  if (threads.length > 0) return threads[0].id;
-
-  // 2. Create new if none exist
-  return await chatDb.create(workspacePath, "General Discussion");
+class PermissionRequiredError extends Error {
+  constructor(public permissionId: string) {
+    super('Permission Required');
+  }
 }
 
 export const agentService = {
-  processMessage: async (input: string) => {
+  processMessage: async (userMessage: string, agentId: string = 'planner') => {
     const store = workbenchStore.getState();
-    const { 
-      addChatMessage, requestPermission, setStreaming, setAgentStatus, profile, activeWorkspaceId 
+    const {
+      activeConversationId,
+      addChatMessage,
+      requestPermission,
+      setAgentStatus,
+      setStreaming,
+      profile,
     } = store;
 
-    // 1. RESOLVE PROVIDER & KEY (Defensively)
-    const activeId = profile.activeProvider || 'openai';
-    
-    // FIX: Ensure config object exists before accessing it
-    const safeConfig = profile.config || {}; 
-    
-    // FIX: Now safely access the provider config
-    // @ts-ignore - Typescript might complain about indexing, but this is safe at runtime
-    const providerConfig = safeConfig[activeId] || {}; 
-    
-    // Validation: Do we have what we need?
-    if (activeId !== 'ollama' && !providerConfig.apiKey) {
-       addChatMessage({
-        id: `sys-${Date.now()}`,
-        role: 'system',
-        content: `⚠️ **Configuration Error**: No API Key found for **${activeId}**. Please open Settings and configure the provider.`,
-        timestamp: new Date(),
-      });
-      return;
+    if (!activeConversationId) return;
+
+    const workspaceId = store.activeWorkspaceId;
+    if (!workspaceId) return;
+
+    let providerId = profile.activeProvider || 'openai';
+    let modelName = profile.config?.[providerId]?.model || 'gpt-4o';
+
+    const mappingRows = await db
+      .select()
+      .from(roleMappings)
+      .where(and(eq(roleMappings.workspaceId, workspaceId), eq(roleMappings.role, agentId)))
+      .limit(1);
+
+    const mapping = mappingRows[0];
+    if (mapping) {
+      providerId = mapping.providerId;
+      modelName = mapping.modelId;
+      console.log(`🤖 Role [${agentId}] mapped to [${modelName}] via Provider [${providerId}]`);
+    } else {
+      console.warn(`⚠️ No mapping found for role [${agentId}], using default.`);
     }
 
-    const modelName = providerConfig.model || 'gpt-4o';
-    const provider: LLMProvider = getLLMProvider(activeId);
+    const provider = getLLMProvider(providerId);
+    const providerConfig = profile.config?.[providerId];
+    const apiKey = providerConfig?.apiKey;
 
     setStreaming(true);
-    setAgentStatus('planner', 'thinking');
+    setAgentStatus(agentId, 'running');
 
     try {
-      // --- TOOL: READ FILE ---
-      if (input.toLowerCase().startsWith('read ')) {
-        const filename = input.split(' ')[1];
-        try {
-          const content = await fileSystemApi.readFile(filename);
-          
-          const response = await provider.generate({
-            model: modelName,
-            apiKey: providerConfig.apiKey, 
-            systemPrompt: "You are a Senior Engineer. Analyze the code. Be concise.",
-            userPrompt: `File: ${filename}\n\nCode:\n${content}\n\nRequest: ${input}`
-          });
+      const history = await chatDb.listMessages(activeConversationId, 10);
+      const grammar = gbnfGenerator.generate(AgentActionSchema);
 
-          addChatMessage({
-            id: `ai-${Date.now()}`,
-            role: 'assistant',
-            content: response.content,
-            timestamp: new Date(),
-          });
-        } catch (e: any) {
-          addChatMessage({
-            id: `ai-${Date.now()}`,
-            role: 'assistant',
-            content: `Error reading file: ${e.message}`,
-            timestamp: new Date(),
-          });
-        }
-      }
+      const systemPrompt = `
+You are an autonomous AI developer working inside AI Workbench.
+You MUST respond with valid JSON matching the schema provided.
+Do not use markdown or prose.
 
-      // --- TOOL: WRITE CODE ---
-      else if (input.toLowerCase().startsWith('write ') || input.toLowerCase().startsWith('create ')) {
-        const parts = input.split(' ');
-        const filename = parts[1];
-        
-        const response = await provider.generate({
-          model: modelName,
-          apiKey: providerConfig.apiKey,
-          systemPrompt: "You are a Code Generator. Output ONLY the code for the file requested. No markdown fences, no chatter.",
-          userPrompt: `Request: ${input}`
-        });
+TOOLS:
+- read_file(path)
+- write_file(path, content)
+- run_command(command)
+- final_answer (respond to the user)
+`;
 
-        const permId = requestPermission({
-          type: 'file_write',
-          riskLevel: 'medium',
-          operation: `Write code to ${filename}`,
-          requestedBy: 'Lead Engineer',
-          reason: 'User requested code generation via Chat.',
-          details: { 
-            path: filename, 
-            contentPreview: response.content 
-          }
-        });
+      const historyText = history
+        .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+        .join('\n');
 
-        addChatMessage({
-          id: `ai-${Date.now()}`,
-          role: 'assistant',
-          content: `I have generated code for **${filename}**. Review the Permission Card to save it.`,
-          timestamp: new Date(),
-        });
-      }
-
-      // --- DEFAULT CHAT ---
-      else {
-        const response = await provider.generate({
-          model: modelName,
-          apiKey: providerConfig.apiKey,
-          systemPrompt: "You are a helpful AI assistant in a Cyberpunk IDE.",
-          userPrompt: input
-        });
-
-        addChatMessage({
-          id: `ai-${Date.now()}`,
-          role: 'assistant',
-          content: response.content,
-          timestamp: new Date(),
-        });
-      }
-
-    } catch (err: any) {
-      addChatMessage({
-        id: `sys-${Date.now()}`,
-        role: 'system',
-        content: `AI Error: ${err.message}`,
-        timestamp: new Date(),
+      const response = await provider.generate({
+        model: modelName,
+        apiKey,
+        systemPrompt,
+        userPrompt: `History:\n${historyText}\n\nUser: ${userMessage}`,
+        grammar,
       });
+
+      let action = AgentActionSchema.parse(JSON.parse(response.content));
+
+      if (action.tool === 'final_answer') {
+        addChatMessage({
+          role: 'assistant',
+          content: action.thought,
+          timestamp: new Date(),
+        });
+        return;
+      }
+
+      if (action.tool === 'read_file') {
+        if (!action.parameters.path) {
+          throw new Error('read_file requires parameters.path');
+        }
+        addChatMessage({
+          role: 'assistant',
+          content: `📖 Reading ${action.parameters.path}...`,
+          timestamp: new Date(),
+        });
+
+        const content = await fileSystemApi.readFile(action.parameters.path);
+
+        addChatMessage({
+          role: 'tool',
+          content: `FILE CONTENT (${action.parameters.path}):\n${content}`,
+          timestamp: new Date(),
+        });
+        return;
+      }
+
+      if (action.tool === 'write_file') {
+        if (!action.parameters.path || !action.parameters.content) {
+          throw new Error('write_file requires path and content');
+        }
+
+        setAgentStatus(agentId, 'queued');
+        const permissionId = requestPermission({
+          type: 'file_write',
+          operation: `Write to ${action.parameters.path}`,
+          riskLevel: 'medium',
+          details: {
+            path: action.parameters.path,
+            preview: action.parameters.content.slice(0, 200),
+          },
+        });
+
+        addChatMessage({
+          role: 'assistant',
+          content: `I prepared code for ${action.parameters.path}. Please approve the permission request to apply it.`,
+          timestamp: new Date(),
+        });
+
+        throw new PermissionRequiredError(permissionId);
+      }
+
+      if (action.tool === 'run_command') {
+        if (!action.parameters.command) {
+          throw new Error('run_command requires parameters.command');
+        }
+
+        setAgentStatus(agentId, 'queued');
+        const permissionId = requestPermission({
+          type: 'run_command',
+          operation: action.parameters.command,
+          riskLevel: 'high',
+          details: { command: action.parameters.command },
+        });
+
+        addChatMessage({
+          role: 'assistant',
+          content: `I need to run \`${action.parameters.command}\`. Please approve the permission card.`,
+          timestamp: new Date(),
+        });
+
+        throw new PermissionRequiredError(permissionId);
+      }
+    } catch (error: unknown) {
+      if (error instanceof PermissionRequiredError) {
+        console.log('Agent paused pending permission', error.permissionId);
+      } else {
+        const err = error as Error;
+        console.error('Agent Error:', err);
+        setAgentStatus(agentId, 'failed');
+        addChatMessage({
+          role: 'system',
+          content: `Error: ${err.message}`,
+          timestamp: new Date(),
+        });
+      }
     } finally {
+      const latestStatus =
+        workbenchStore.getState().agentStatuses[agentId]?.state;
       setStreaming(false);
-      setAgentStatus('planner', 'idle');
+      if (latestStatus !== 'queued') {
+        setAgentStatus(agentId, 'idle');
+      }
     }
-  }
+  },
 };

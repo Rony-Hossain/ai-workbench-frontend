@@ -2,11 +2,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fileSystemApi } from './files.service';
 
 // 1. Hook to GET the file tree (The missing export!)
-export const useFileTree = (path: string) => {
+export const useFileTree = (path: string, options?: { enabled?: boolean }) => {
   return useQuery({
     queryKey: ['files', path],
-    queryFn: () => fileSystemApi.readDir(path),
+    queryFn: () => {
+      if (!path) return null;
+      return fileSystemApi.readDir(path);
+    },
     refetchOnWindowFocus: false,
+    enabled: options?.enabled !== false && !!path,
   });
 };
 

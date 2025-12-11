@@ -34,6 +34,13 @@ class InMemoryChatDb {
     return this.conversations.get(id);
   }
 
+  async listMessages(id: string, limit = 10) {
+    const convo = this.conversations.get(id);
+    if (!convo) return [];
+    if (limit <= 0) return [...convo.messages];
+    return convo.messages.slice(-limit);
+  }
+
   async addMessage(id: string, msg: ChatMessage) {
     const convo = this.conversations.get(id);
     if (!convo) return;

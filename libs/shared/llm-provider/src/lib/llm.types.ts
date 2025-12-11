@@ -3,6 +3,7 @@ export interface LLMRequest {
   userPrompt: string;
   model: string; // e.g. "gpt-4o" or "llama3"
   apiKey?: string;
+  grammar?: string;
 }
 
 export interface LLMResponse {

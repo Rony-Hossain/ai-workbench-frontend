@@ -31,7 +31,9 @@ export const FilesPaneContainer: React.FC = () => {
   }, []);
 
   // 4. Fetch Data (Only if activePath exists)
-  const { data, isLoading } = useFileTree(activePath || '');
+  const { data, isLoading } = useFileTree(activePath || '', {
+    enabled: !!activePath,
+  });
 
   const handleOpenFolder = async () => {
     const path = await workspaceApi.openDirectory();

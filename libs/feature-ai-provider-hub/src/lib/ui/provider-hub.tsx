@@ -23,7 +23,7 @@ export function AIProviderHub() {
   }
 
   return (
-    <div className="space-y-8 p-6 bg-neutral-950 min-h-screen text-neutral-200 font-sans">
+    <div className="space-y-8 p-6 bg-neutral-950 h-full text-neutral-200 font-sans">
       {showWizard && (
         <AddProviderWizard
           onComplete={() => {

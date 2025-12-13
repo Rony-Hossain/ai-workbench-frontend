@@ -6,42 +6,59 @@ import {
   ProviderTypeEnum,
   type AIModel,
 } from '@ai-workbench/bounded-contexts';
-import { providers } from '@ai-workbench/shared/database';
+import { providers, agents } from '@ai-workbench/shared/database';
 import { eq } from 'drizzle-orm';
+import * as crypto from 'crypto';
 
+// --- HELPER: Safe Network Probe (No Axios) ---
 type ProbeResult = { alive: boolean; models: Array<{ id: string }> };
 
 async function probeEndpoint(url: string): Promise<ProbeResult> {
+  const controller = new AbortController();
+  // 1.5s Timeout prevents the UI from freezing on dead IPs
+  const timeoutId = setTimeout(() => controller.abort(), 1500);
+
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    console.log(`📡 Probing: ${url}...`); 
 
     const response = await fetch(`${url}/models`, {
-      signal: controller.signal,
+      method: 'GET',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
 
     if (response.ok) {
-      const data = (await response.json()) as { data?: Array<{ id: string }> };
-      return {
-        alive: true,
-        models: Array.isArray(data.data) ? data.data : [],
-      };
+      const data = await response.json();
+      
+      // FIX: Strict check to ensure 'models' is NEVER undefined
+      const rawModels = (data && Array.isArray(data.data)) ? data.data : [];
+      
+      // Clean mapping
+      const models = rawModels.map((m: any) => ({
+        id: m?.id ? String(m.id) : 'unknown-model'
+      }));
+
+      console.log(`✅ Alive: ${url} (${models.length} models)`);
+      return { alive: true, models };
     }
-  } catch (error) {
-    // Ignore errors; treated as offline endpoint
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    // Ignore normal network errors during scan
+    if (error.name !== 'AbortError') {
+      console.log(`❌ Unreachable [${url}]`);
+    }
   }
   return { alive: false, models: [] };
 }
 
 export const providerRouter = router({
+  // 1. LIST
   list: protectedProcedure
     .output(z.array(ProviderSchema))
     .query(async ({ ctx }) => {
       const rows = await ctx.db.select().from(providers);
-
       return rows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -58,11 +75,11 @@ export const providerRouter = router({
       }));
     }),
 
+  // 2. CREATE
   create: protectedProcedure
     .input(CreateProviderSchema)
     .mutation(async ({ ctx, input }) => {
       const safeKey = input.apiKey ? `encrypted_${input.apiKey}` : null;
-
       await ctx.db.insert(providers).values({
         id: crypto.randomUUID(),
         name: input.name,
@@ -74,10 +91,89 @@ export const providerRouter = router({
         workspaceScope: input.workspaceScope,
         status: 'offline',
       });
-
       return { success: true };
     }),
 
+  // 3. BATCH IMPORT SWARM (Auto-Hires Agents)
+  importSwarm: protectedProcedure
+    .input(
+      z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          endpoint: z.string(),
+          model: z.string().optional(),
+          role: z.string().optional(),
+          type: z.string(),
+        })
+      )
+    )
+    .mutation(async ({ ctx, input }) => {
+      const newProviders: any[] = [];
+      const newAgents: any[] = [];
+
+      for (const p of input) {
+        const providerId = crypto.randomUUID();
+
+        // A. Create Provider
+        newProviders.push({
+          id: providerId,
+          name: p.name,
+          label: p.role ? `${p.name} (${p.role})` : p.name,
+          type: p.type,
+          endpoint: p.endpoint,
+          apiKey: null,
+          models: p.model
+            ? [{ id: p.model, name: p.model, capabilities: ['chat'], status: 'available' }]
+            : [],
+          workspaceScope: 'global',
+          status: 'offline',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        // B. Create Agent (If role exists)
+        if (p.role) {
+          let agentName = p.name;
+          let roleType = 'coder'; // Safe default for schema
+          let systemPrompt = 'You are a helpful AI assistant.';
+
+          if (p.role === 'planner-agent') {
+            agentName = 'Planner';
+            roleType = 'planner';
+            systemPrompt = 'You are a Senior Software Architect. Plan systems, create specs.';
+          } else if (p.role === 'executor-agent') {
+            agentName = 'Lead Engineer';
+            roleType = 'coder';
+            systemPrompt = 'You are a Lead Software Engineer. Write production-ready code.';
+          } else if (p.role === 'reviewer-agent') {
+            agentName = 'Reviewer';
+            roleType = 'reviewer';
+            systemPrompt = 'You are a QA Specialist. Review code strictly.';
+          }
+
+          newAgents.push({
+            id: crypto.randomUUID(),
+            name: agentName,
+            role: roleType,
+            modelId: providerId,
+            systemPrompt: systemPrompt,
+            temperature: 0.7,
+            tools: [],
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+      }
+
+      if (newProviders.length > 0) await ctx.db.insert(providers).values(newProviders);
+      if (newAgents.length > 0) await ctx.db.insert(agents).values(newAgents);
+
+      return { success: true, count: newProviders.length + newAgents.length };
+    }),
+
+  // 4. DELETE
   delete: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
@@ -85,6 +181,7 @@ export const providerRouter = router({
       return { success: true };
     }),
 
+  // 5. SCAN LOCAL NETWORK (Uses ProbeEndpoint)
   scanLocalNetwork: protectedProcedure
     .output(
       z.array(
@@ -112,7 +209,8 @@ export const providerRouter = router({
           return {
             endpoint: candidate.url,
             name: candidate.name,
-            models: probe.models.map((model) => model.id),
+            // Map objects {id: "foo"} -> strings "foo"
+            models: probe.models.map((m: any) => m.id),
           };
         }),
       );
@@ -120,21 +218,16 @@ export const providerRouter = router({
       return results.filter((item): item is NonNullable<typeof item> => Boolean(item));
     }),
 
+  // 6. REFRESH
   refreshModels: protectedProcedure
     .input(z.object({ providerId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const provider = await ctx.db.query.providers.findFirst({
-        where: eq(providers.id, input.providerId),
-      });
-
-      if (!provider || !provider.endpoint) {
-        throw new Error('Provider not reachable');
-      }
+      const provider = await ctx.db.query.providers.findFirst({ where: eq(providers.id, input.providerId) });
+      if (!provider?.endpoint) throw new Error('Provider not reachable');
 
       const probe = await probeEndpoint(provider.endpoint);
       if (!probe.alive) {
-        await ctx.db
-          .update(providers)
+        await ctx.db.update(providers)
           .set({ status: 'offline', lastChecked: new Date() })
           .where(eq(providers.id, input.providerId));
         return { success: false, message: 'Endpoint offline' };
@@ -148,14 +241,9 @@ export const providerRouter = router({
         status: 'available',
       }));
 
-      await ctx.db
-          .update(providers)
-          .set({
-            models: mappedModels,
-            status: 'running',
-            lastChecked: new Date(),
-          })
-          .where(eq(providers.id, input.providerId));
+      await ctx.db.update(providers)
+        .set({ models: mappedModels, status: 'running', lastChecked: new Date() })
+        .where(eq(providers.id, input.providerId));
 
       return { success: true, count: mappedModels.length };
     }),

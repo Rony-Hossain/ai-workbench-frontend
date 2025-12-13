@@ -1,14 +1,20 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { exposeElectronTRPC } from 'electron-trpc/main';
 import type {
   TerminalAgentEventPayload,
   TerminalBridgeApi,
 } from '@ai-workbench/shared/electron-bridge';
 import type { TerminalSession } from '@ai-workbench/feature-terminal';
 
-// 1. Enable the tRPC Bridge (Crucial for AI/DB)
-// Call immediately so the global is available as soon as the preload runs.
-exposeElectronTRPC();
+console.log('🔌 Preload script loading...');
+
+process.once('loaded', () => {
+  contextBridge.exposeInMainWorld('electronTRPC', {
+    sendMessage: (operation: unknown) => ipcRenderer.send('electron-trpc', operation),
+    onMessage: (callback: (payload: unknown) => void) => {
+      ipcRenderer.on('electron-trpc', (_event, args) => callback(args));
+    },
+  });
+});
 
 // 2. Define Manual API (For Terminal & Files)
 const api = {
@@ -23,20 +29,14 @@ const api = {
   },
   terminal: {
     create: async (cwd?: string) => {
-      const result = (await ipcRenderer.invoke('terminal:create', {
-        cwd,
-      })) as { id?: string };
+      const result = (await ipcRenderer.invoke('terminal:create', { cwd })) as { id?: string };
       return result?.id ?? '';
     },
-    write: (id: string, data: string) =>
-      ipcRenderer.invoke('terminal:write', { id, data }),
-    resize: (id: string, cols: number, rows: number) =>
-      ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
+    write: (id: string, data: string) => ipcRenderer.invoke('terminal:write', { id, data }),
+    resize: (id: string, cols: number, rows: number) => ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
+    kill: (id: string) => ipcRenderer.invoke('terminal:kill', id),
     onData: (callback: (id: string, data: string) => void) => {
-      const subscription = (
-        _event: Electron.IpcRendererEvent,
-        payload: { id: string; data: string },
-      ) => {
+      const subscription = (_event: Electron.IpcRendererEvent, payload: { id: string; data: string }) => {
         callback(payload.id, payload.data);
       };
       ipcRenderer.on('terminal:data', subscription);
@@ -124,3 +124,5 @@ const terminalAPI: TerminalBridgeApi = {
 // 3. Expose Manual API
 contextBridge.exposeInMainWorld('electron', api);
 contextBridge.exposeInMainWorld('terminalAPI', terminalAPI);
+
+console.log('✅ Preload script loaded.');

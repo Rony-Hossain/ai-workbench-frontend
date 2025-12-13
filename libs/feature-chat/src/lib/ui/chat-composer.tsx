@@ -23,16 +23,24 @@ export function ChatComposer({ agents, onSend, isGenerating = false, onStop }: C
   const isAgentOffline = selectedAgent?.status === "offline"
 
   const handleSend = () => {
+
+    console.log("🖱️ [COMPOSER] handleSend triggered!");
+    console.log("   -> Message:", message);
+    console.log("   -> Target:", targetAgent);
     if (message.trim() || attachments.length > 0) {
+      console.log("   -> Valid! Calling prop onSend()...");
       onSend(message, targetAgent, attachments)
       setMessage("")
       setAttachments([])
+    } else {
+      console.warn("   -> Empty message ignored.");
     }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
+      console.log("⌨️ [COMPOSER] Enter key detected.");
       handleSend()
     }
   }

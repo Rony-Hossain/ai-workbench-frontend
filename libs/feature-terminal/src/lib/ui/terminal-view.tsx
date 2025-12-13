@@ -12,6 +12,7 @@ import {
   Square,
   RefreshCw,
   Plus,
+  PlusCircle,
   Terminal as TerminalIcon,
 } from 'lucide-react';
 import { cn } from '@ai-workbench/shared/utils';
@@ -28,6 +29,8 @@ export const TerminalView: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
+  
+  // Refs for stable access inside event listeners/observers
   const sessionIdRef = useRef<string | null>(null);
   const currentAgentRef = useRef<string>(AGENT_OPTIONS[0].id);
   const isPausedRef = useRef(false);
@@ -38,6 +41,7 @@ export const TerminalView: React.FC = () => {
   const [currentAgent, setCurrentAgent] = useState(AGENT_OPTIONS[0].id);
   const [connectedAgents, setConnectedAgents] = useState<string[]>([]);
 
+  // Sync refs with state
   sessionIdRef.current = sessionId;
   currentAgentRef.current = currentAgent;
   isPausedRef.current = isPaused;
@@ -54,9 +58,13 @@ export const TerminalView: React.FC = () => {
     }
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // TERMINAL INITIALIZATION & LIFECYCLE
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current || terminalInstanceRef.current) return;
 
+    // 1. Init Terminal
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -73,24 +81,24 @@ export const TerminalView: React.FC = () => {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    
+    // 2. Mount
     term.open(containerRef.current);
-    fitAddon.fit();
+    
+    // 3. CRITICAL FIX: Wait for layout paint before fitting
+    // This prevents "Cannot read properties of undefined (reading 'dimensions')"
+    requestAnimationFrame(() => {
+        try {
+            fitAddon.fit();
+        } catch (e) {
+            // Xterm throws if container is hidden/display:none. Safe to ignore.
+        }
+    });
 
     terminalInstanceRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const handleResize = () => {
-      fitAddon.fit();
-      if (sessionIdRef.current && window.terminalAPI) {
-        window.terminalAPI.resize(
-          sessionIdRef.current,
-          currentAgentRef.current,
-          term.cols,
-          term.rows,
-        );
-      }
-    };
-
+    // 4. Handle Input
     const inputDisposable: IDisposable = term.onData((data) => {
       if (
         sessionIdRef.current &&
@@ -105,10 +113,35 @@ export const TerminalView: React.FC = () => {
       }
     });
 
-    window.addEventListener('resize', handleResize);
+    // 5. CRITICAL FIX: ResizeObserver instead of window.resize
+    // Handles sidebar toggles and layout changes correctly.
+    const resizeObserver = new ResizeObserver(() => {
+        try {
+            if (!fitAddonRef.current || !terminalInstanceRef.current) return;
+            
+            fitAddonRef.current.fit();
+            
+            // Sync new size to Backend/PTY
+            if (sessionIdRef.current && window.terminalAPI) {
+                const { cols, rows } = terminalInstanceRef.current;
+                window.terminalAPI.resize(
+                    sessionIdRef.current,
+                    currentAgentRef.current,
+                    cols,
+                    rows
+                );
+            }
+        } catch (e) {
+            // Ignore resize errors when hidden
+        }
+    });
+    
+    // Start observing the specific container div
+    resizeObserver.observe(containerRef.current);
 
+    // Cleanup
     return () => {
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       inputDisposable.dispose();
       term.dispose();
       fitAddon.dispose();
@@ -117,6 +150,9 @@ export const TerminalView: React.FC = () => {
     };
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // SOCKET / IPC EVENTS
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -173,6 +209,9 @@ export const TerminalView: React.FC = () => {
     };
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // HANDLERS
+  // ---------------------------------------------------------------------------
   const handleCreate = useCallback(async () => {
     if (!window.terminalAPI || !terminalInstanceRef.current) return;
 
@@ -189,6 +228,8 @@ export const TerminalView: React.FC = () => {
       terminalInstanceRef.current.writeln(
         `\u001b[32m>>> Session Created: ${res.sessionId}\u001b[0m\r\n`,
       );
+      // Re-fit ensures we use the full space immediately on new session
+      fitAddonRef.current?.fit(); 
       await refreshSessions();
     }
   }, [currentAgent, refreshSessions, sessions.length]);
@@ -215,6 +256,7 @@ export const TerminalView: React.FC = () => {
       terminalInstanceRef.current.writeln(
         `\u001b[32m>>> Joined Session: ${id}\u001b[0m\r\n`,
       );
+      fitAddonRef.current?.fit();
     },
     [currentAgent],
   );
@@ -230,6 +272,7 @@ export const TerminalView: React.FC = () => {
 
   return (
     <div className="flex h-full bg-neutral-950 text-neutral-200">
+      {/* Sidebar */}
       <div className="w-64 flex flex-col border-r border-neutral-800 bg-neutral-900/50">
         <div className="p-3 border-b border-neutral-800 flex items-center justify-between">
           <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">
@@ -288,13 +331,26 @@ export const TerminalView: React.FC = () => {
 
         <div className="p-3 border-t border-neutral-800 space-y-3 bg-neutral-900">
           <div>
-            <label className="text-[10px] uppercase text-neutral-500 font-bold">
-              Identity
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] uppercase text-neutral-500 font-bold">
+                Identity
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  // TODO: wire into provider settings modal when available
+                  console.log('Open Add Provider Modal');
+                }}
+                className="text-neutral-500 hover:text-primary transition-colors"
+                title="Add Provider"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <select
               value={currentAgent}
               onChange={(event) => setCurrentAgent(event.target.value)}
-              className="w-full mt-1 bg-neutral-950 border border-neutral-800 rounded text-xs px-2 py-1.5"
+              className="w-full mt-1 bg-neutral-950 border border-neutral-800 rounded text-xs px-2 py-1.5 focus:border-primary/50 focus:ring-1 focus:ring-primary/50 outline-none transition-all"
             >
               {AGENT_OPTIONS.map((agent) => (
                 <option key={agent.id} value={agent.id}>
@@ -326,6 +382,7 @@ export const TerminalView: React.FC = () => {
         </div>
       </div>
 
+      {/* Main Terminal Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-neutral-950">
         <div className="h-9 border-b border-neutral-800 flex items-center justify-between px-4 bg-neutral-900/30">
           <div className="flex items-center gap-2 text-xs text-neutral-400">
@@ -362,7 +419,7 @@ export const TerminalView: React.FC = () => {
           )}
         </div>
 
-        <div className="flex-1 p-2 relative">
+        <div className="flex-1 p-2 relative overflow-hidden">
           {!sessionId && (
             <div className="absolute inset-0 flex items-center justify-center text-neutral-700 pointer-events-none">
               <div className="text-center">
@@ -373,6 +430,7 @@ export const TerminalView: React.FC = () => {
               </div>
             </div>
           )}
+          {/* TERMINAL MOUNT POINT */}
           <div
             ref={containerRef}
             className={cn('h-full w-full', !sessionId && 'opacity-0')}

@@ -40,6 +40,9 @@ export interface WorkbenchState
   tasks: WorkbenchTask[];
   activeTaskId: string | null;
 
+  roleMappings: Record<string, Record<string, { providerId: string; modelId: string }>>;
+  setRoleMappings: (workspaceId: string, mappings: Array<{ role: string; providerId: string; modelId: string }>) => void;
+
   // Actions
   loadSession: (workspacePath: string) => Promise<void>; // <--- Restore this
   addChatMessage: (msg: ChatMessage) => void;
@@ -112,6 +115,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         },
         tasks: [],
         activeTaskId: null,
+        roleMappings: {},
 
         // --- Actions ---
 
@@ -172,6 +176,25 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           set((s) => ({ tasks: [newTask, ...s.tasks] }));
           return id;
         },
+
+        setRoleMappings: (workspaceId, mappings) =>
+          set((state) => ({
+            roleMappings: {
+              ...state.roleMappings,
+              [workspaceId]: mappings.reduce<Record<string, { providerId: string; modelId: string }>>(
+                (acc, mapping) => {
+                  if (mapping.providerId && mapping.modelId) {
+                    acc[mapping.role] = {
+                      providerId: mapping.providerId,
+                      modelId: mapping.modelId,
+                    };
+                  }
+                  return acc;
+                },
+                {},
+              ),
+            },
+          })),
         // 1. Load Session from Dexie
         loadSession: async (workspacePath: string) => {
           const threads = await chatDb.listByWorkspace(workspacePath);

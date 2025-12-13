@@ -1,95 +1,145 @@
-import React, { useState } from 'react';
-import { useWorkbenchStore } from '@ai-workbench/state-workbench';
+import React, { useEffect, useState } from 'react';
+import { trpc } from '@ai-workbench/shared/client-api';
 import { WorkspaceChatWithPermissions } from './workspace-chat-with-permissions';
-import type { Agent, User, Message, AgentHistoryItem, ConversationHistoryItem, PermissionHistoryItem } from './types';
+import type { Agent, User, Message, ConversationHistoryItem } from './types';
 
 export const ChatPane: React.FC = () => {
-  const workspaces = useWorkbenchStore((s) => s.workspaces);
-  const activeWorkspaceId = useWorkbenchStore((s) => s.activeWorkspaceId);
-  const initialMessages = useWorkbenchStore((s) => s.chatMessages);
-  const agentStatuses = useWorkbenchStore((s) => s.agentStatuses);
-  const addChatMessage = useWorkbenchStore((s) => s.addChatMessage);
+  // Removed Zustand dependency. 
+  // We use local state for the active conversation ID.
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const utils = trpc.useContext();
 
-  const workspaceList = Array.isArray(workspaces)
-    ? workspaces
-    : Object.values(workspaces || {});
-  const activeWorkspace =
-    (typeof workspaces === 'object' && !Array.isArray(workspaces)
-      ? workspaces?.[activeWorkspaceId ?? '']
-      : undefined) ??
-    workspaceList.find((w) => w.id === activeWorkspaceId);
+  // --- 1. DATA FETCHING ---
+  
+  // A. Agents from DB
+  const { data: dbAgents } = trpc.agent.list.useQuery();
+  
+  // B. Conversations from DB (For Sidebar)
+  const { data: conversations } = trpc.conversation.list.useQuery();
+  
+  // C. Messages for Active Chat
+  const { data: dbMessages, isLoading: isChatLoading } = trpc.chat.history.useQuery(
+    { conversationId: activeConversationId || '' },
+    { 
+      enabled: !!activeConversationId,
+      refetchInterval: 1500 // Poll for new messages every 1.5s
+    }
+  );
 
-  // --- Data Mapping & Mocking ---
-  // This section maps your Zustand state to the format the new components expect.
-  // It also includes mock data that you should replace with real data from your store or API.
+  // --- 2. MUTATIONS ---
 
-  const users: User[] = [
-    { id: 'user-1', name: 'Rony', avatar: 'https://github.com/shadcn.png' },
-  ];
+  const createConvMutation = trpc.chat.createConversation.useMutation({
+    onSuccess: () => utils.conversation.list.invalidate()
+  });
+  
+  const sendMutation = trpc.chat.send.useMutation({
+    onMutate: (variables) => {
+      console.log("🔄 [MUTATION] Starting...", variables);
+    },
+    onSuccess: () => {
+      console.log("✅ [MUTATION] Success!");
+      utils.chat.history.invalidate();
+    },
+    onError: (error) => {
+      console.error("🔥 [MUTATION] Failed:", error);
+    }
+  });
+  // --- 3. AUTO-INIT LOGIC ---
+  useEffect(() => {
+    if (!activeConversationId && conversations) {
+      if (conversations.length > 0) {
+        // Select most recent
+        setActiveConversationId(conversations[0].id);
+      } else {
+        // Create default if empty
+        createConvMutation.mutateAsync({ title: 'General Operations' }).then((res) => {
+          setActiveConversationId(res.id);
+        });
+      }
+    }
+  }, [conversations, activeConversationId]);
 
-  const agents: Agent[] = Object.values(agentStatuses || {}).map((status) => ({
-    id: status.agentId,
-    name: status.label,
-    model: status.kind,
-    status: status.state === 'active' ? 'thinking' : 'online',
-    avatar: '', // You can add avatar URLs to your agent state
+  // --- 4. DATA MAPPING (DB -> UI) ---
+
+  const users: User[] = [{ id: 'user-1', name: 'Commander', avatar: '' }];
+  
+  const agents: Agent[] = (dbAgents || []).map(a => ({
+    id: a.id,
+    name: a.name,
+    model: a.role, 
+    status: a.isActive ? 'online' : 'offline',
+    avatar: '',
   }));
 
-  const messages: Message[] = initialMessages.map((m) => ({
-    id: m.id || `msg-${m.timestamp}`,
+  const messages: Message[] = (dbMessages || []).map(m => ({
+    id: m.id,
     type: m.role === 'user' ? 'human' : 'agent',
-    senderId: m.role === 'user' ? users[0].id : m.agent_id || 'unknown',
-    senderName: m.role === 'user' ? users[0].name : m.agent_id || 'Agent',
-    senderAvatar: m.role === 'user' ? users[0].avatar : undefined,
+    senderId: m.role === 'user' ? 'user-1' : 'system',
+    senderName: m.role === 'user' ? 'Commander' : 'AI Agent',
+    // Basic mapping - in a real app, you'd parse metadata for specific agent names
     content: m.content,
     timestamp: new Date(m.timestamp),
-    status: 'sent', // You can enhance this based on message status
+    status: 'sent',
   }));
 
-  // Mock history data - replace with actual data
-  const permissionHistory: PermissionHistoryItem[] = [];
-  const conversationHistory: ConversationHistoryItem[] = [];
-  const agentHistory: AgentHistoryItem[] = [];
+  const conversationHistory: ConversationHistoryItem[] = (conversations || []).map(c => ({
+    id: c.id,
+    title: c.title,
+    lastMessage: 'View conversation', // Drizzle query doesn't fetch this yet, placeholder is fine
+    timestamp: new Date(c.updatedAt),
+    messageCount: 0,
+    isActive: c.id === activeConversationId,
+    participants: []
+  }));
 
-  const [isGenerating, setIsGenerating] = useState(false);
+  // --- 5. HANDLERS ---
 
-  // --- Event Handlers ---
-  const handleSendMessage = (
-    content: string,
-    targetAgent: string,
-    attachments: any[]
-  ) => {
-    addChatMessage({
-      role: 'user',
-      content,
-      timestamp: new Date(),
-      // You might want to add targetAgent to your ChatMessage type
-    });
-    // Here you would typically trigger the agent logic
-    // For now, we'll just simulate a thinking state
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 2000);
+  // --- DEBUG HANDLER ---
+  const handleSendMessage = async (content: string, targetAgent: string, attachments: any[]) => {
+    console.log("📡 [PANE] handleSendMessage received:", content);
+    
+    if (!activeConversationId) {
+      console.error("❌ [PANE] No Active Conversation ID!");
+      return;
+    }
+
+    try {
+      console.log("🚀 [PANE] Triggering Mutation...");
+      await sendMutation.mutateAsync({
+        conversationId: activeConversationId,
+        content,
+        targetAgentId: targetAgent === 'all' ? undefined : targetAgent
+      });
+    } catch (e) {
+      console.error("💥 [PANE] Crash in handleSendMessage:", e);
+    }
   };
 
-  const handleStop = () => {
-    setIsGenerating(false);
-  };
+  // ... (keep render)
+
+
+  if (!activeConversationId) return <div className="h-full flex items-center justify-center text-neutral-500 text-xs">Initializing Comms Link...</div>;
 
   return (
     <WorkspaceChatWithPermissions
-      workspaceName={activeWorkspace?.name || 'AI Workbench'}
+      workspaceName="Main Operations"
       users={users}
       agents={agents}
-      messages={messages}
-      permissionHistory={permissionHistory}
-      conversationHistory={conversationHistory}
-      agentHistory={agentHistory}
-      onSendMessage={handleSendMessage}
-      isGenerating={isGenerating}
-      onStop={handleStop}
-      showAgentPanel={true}
+      messages={messages} // Passing REAL DB messages
+      conversationHistory={conversationHistory} // Passing REAL DB conversations
+      permissionHistory={[]} // Placeholder until permission router exists
+      agentHistory={[]} // Placeholder
+      
+      // Feature Flags
+      showHistoryPanel={false}
       showConversationPanel={true}
-      showHistoryPanel={true}
+      showAgentPanel={false}
+      
+      // Events
+      onSendMessage={handleSendMessage}
+      onSelectConversation={setActiveConversationId}
+      isGenerating={sendMutation.isPending}
+      onStop={() => {}}
     />
   );
 };

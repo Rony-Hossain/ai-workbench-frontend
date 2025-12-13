@@ -1,28 +1,64 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import * as os from 'os';
 import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import { createIPCHandler } from 'electron-trpc/main';
 import { appRouter } from './router';
 import type { TerminalSession as ClientTerminalSession } from '@ai-workbench/feature-terminal';
+import { createContext } from './trpc/context';
 
 // -----------------------------------------------------------------------------
 // CRITICAL FIX: LINUX / WSL2 RENDERING FLAGS
 // These MUST be set before app.on('ready') or they do nothing.
 // -----------------------------------------------------------------------------
+// if (process.platform === 'linux') {
+//   try {
+//     const safeTempDir = path.join(os.homedir(), '.ai-workbench-tmp');
+//     if (!existsSync(safeTempDir)) {
+//       mkdirSync(safeTempDir, { recursive: true });
+//     }
+
+//     // Make all temp-related env vars point here
+//     process.env.TMPDIR = safeTempDir;
+//     process.env.TMP = safeTempDir;
+//     process.env.TEMP = safeTempDir;
+//     process.env.XDG_RUNTIME_DIR = safeTempDir;
+
+//     // Tell Electron itself to use these paths
+//     app.setPath('temp', safeTempDir);
+//     app.setPath('userData', path.join(safeTempDir, 'user-data'));
+//     app.setPath('crashDumps', path.join(safeTempDir, 'crash-dumps'));
+
+//     console.log(`🛡️  Linux Sandbox Patch: Redirected TMP to ${safeTempDir}`);
+//   } catch (e) {
+//     console.error('❌ Failed to create safe temp dir:', e);
+//   }
+
+//   // Rendering / sandbox flags – keep them minimal and intentional
+//   app.disableHardwareAcceleration();
+//   app.commandLine.appendSwitch('disable-gpu');
+//   app.commandLine.appendSwitch('no-sandbox');          // if you really need it in your env
+//   app.commandLine.appendSwitch('disable-gpu-compositing');
+//   app.commandLine.appendSwitch('disable-gpu-rasterization');
+//   app.commandLine.appendSwitch('disable-gpu-sandbox');
+//   app.commandLine.appendSwitch('--in-process-gpu');
+//   app.commandLine.appendSwitch('use-gl', 'swiftshader');
+
+//   // CRITICAL: force Chromium to NOT use /dev/shm
+//   app.commandLine.appendSwitch('disable-dev-shm-usage');
+//   app.commandLine.appendSwitch('remote-debugging-port', '9223');
+// }
+
+
 if (process.platform === 'linux') {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu');
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-gpu-compositing');
-  app.commandLine.appendSwitch('disable-gpu-rasterization');
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
-  app.commandLine.appendSwitch('--in-process-gpu');
-  app.commandLine.appendSwitch('use-gl', 'swiftshader');
 }
+
+
 // -----------------------------------------------------------------------------
 
 interface FileNode {
@@ -280,9 +316,15 @@ const readDirRecursive = (dirPath: string): FileNode => {
 };
 
 function createWindow(): void {
+
+  // app.commandLine.appendSwitch('disable-gpu'); 
+  // app.commandLine.appendSwitch('disable-software-rasterizer');
+  // app.commandLine.appendSwitch('disable-dev-shm-usage');
+
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1580,
+    height: 1000,
     frame: false,
     backgroundColor: '#0a0a0a',
     webPreferences: {
@@ -293,9 +335,11 @@ function createWindow(): void {
     },
   });
 
+
+
   terminalManager = new DistributedTerminalManager(mainWindow);
 
-  createIPCHandler({ router: appRouter, windows: [mainWindow] });
+  createIPCHandler({ router: appRouter, windows: [mainWindow], createContext });
 
   ipcMain.handle('files:read-dir', async (_, dirPath?: string) => {
     if (!dirPath) {

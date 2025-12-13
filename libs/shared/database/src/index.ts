@@ -10,3 +10,5 @@ export { ProjectRepository } from './repositories/project.repository';
 export { TaskRepository } from './repositories/task.repository';
 export { ConversationRepository } from './repositories/conversation.repository';
 export { MessageRepository } from './repositories/message.repository';
+
+

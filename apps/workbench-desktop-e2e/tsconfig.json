@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../dist/out-tsc",
+    "module": "esnext",
+    "target": "es2022"
+  },
+  "include": []
+}

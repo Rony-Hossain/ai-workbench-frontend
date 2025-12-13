@@ -126,6 +126,10 @@ export default defineConfig({
         __dirname,
         '../../libs/shared/utils/src/index.ts'
       ),
+       '@ai-workbench/feature-ai-provider-hub': path.resolve(
+        __dirname,
+        '../../libs/feature-ai-provider-hub/src/index.ts'
+      ),
       '@ai-workbench/shared/database/client': path.resolve(
         __dirname,
         '../../libs/shared/database/src/client-browser.ts'

@@ -23,7 +23,9 @@
       "@ai-workbench/*": ["libs/*/src/index.ts", "libs/shared/*/src/index.ts", "libs/feature-*/src/index.ts"],
       "@ai-workbench/shared/database/client": ["libs/shared/database/src/client-browser.ts"],
       "@ai-workbench-frontend/bounded-contexts": ["libs/shared/bounded-contexts/src/index.ts"],
-      "@ai-workbench-frontend/database": ["libs/shared/database/src/index.ts"]
+      "@ai-workbench-frontend/database": ["libs/shared/database/src/index.ts"],
+      "@ai-workbench/feature-settings": ["libs/feature-settings/src/index.ts"],
+      "@ai-workbench/feature-ai-provider-hub": ["libs/feature-ai-provider-hub/src/index.ts"]
     }
   }
 }

@@ -3,85 +3,63 @@ import * as sqliteVec from 'sqlite-vec';
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import isDev from 'electron-is-dev'; // <--- USE THIS
 
-export class DBService {
-  private db: Database.Database;
+let dbInstance: Database.Database | null = null;
 
-  constructor() {
-    // 1. Ensure Directory Exists (WSL sometimes acts weird with missing folders)
+export const initDatabase = () => {
+  if (dbInstance) return dbInstance;
+
+  let dbPath = '';
+
+  // 1. RELIABLE PATH SELECTION
+  if (isDev) {
+    // In Dev: Use the project root (where you run npm run db:push)
+    // We assume the process is running from the workspace root
+    dbPath = path.resolve(process.cwd(), 'workbench.db');
+    console.log('\n🔵 [DATABASE] MODE: DEVELOPMENT');
+    console.log(`🔵 [DATABASE] PATH: ${dbPath}`);
+  } else {
+    // In Prod: Use the safe OS User Data folder
     const userDataPath = app.getPath('userData');
     if (!fs.existsSync(userDataPath)) {
       fs.mkdirSync(userDataPath, { recursive: true });
     }
+    dbPath = path.join(userDataPath, 'workbench.db');
+    console.log('\n🟢 [DATABASE] MODE: PRODUCTION');
+    console.log(`🟢 [DATABASE] PATH: ${dbPath}`);
+  }
 
-    const dbPath = path.join(userDataPath, 'workbench.db');
-    console.log('🔌 Database Path:', dbPath);
+  // 2. CONNECT
+  try {
+    dbInstance = new Database(dbPath);
+  } catch (e) {
+    console.error(`🔥 [DATABASE] FAILED to open: ${dbPath}`, e);
+    throw e;
+  }
+  
+  // 3. LOAD EXTENSIONS
+  try {
+    sqliteVec.load(dbInstance);
+    console.log('✅ [DATABASE] Vectors Loaded');
+  } catch (e) {
+    console.warn('⚠️ [DATABASE] Vectors Disabled (Load Failed)');
+  }
 
-    this.db = new Database(dbPath);
-    
-    // 2. Load Vector Extension
-    try {
-      sqliteVec.load(this.db);
-      console.log('✅ sqlite-vec loaded successfully');
-    } catch (e) {
-      console.error('❌ Failed to load sqlite-vec:', e);
+  // 4. CHECK INTEGRITY (Quick Sanity Check)
+  try {
+    const tableCheck = dbInstance.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='providers'").get();
+    if (!tableCheck) {
+      console.error('❌ [DATABASE] CRITICAL: Table "providers" not found!');
+      console.error('   -> Run "npm run db:push" to fix the schema.');
+    } else {
+      console.log('✅ [DATABASE] Schema Verified (Providers table exists)');
     }
-    
-    this.init();
-  }
+  } catch (e) { /* ignore */ }
 
-  private init() {
-    this.db.pragma('journal_mode = WAL');
-    
-    console.log('🛠️ Initializing Database Schema...');
+  dbInstance.pragma('journal_mode = WAL');
+  
+  return dbInstance;
+};
 
-    // 3. Create Tables (One by one for safer debugging)
-    try {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS agents (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          role TEXT,
-          config TEXT,
-          created_at INTEGER DEFAULT (strftime('%s', 'now'))
-        );
-      `);
-
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS conversations (
-          id TEXT PRIMARY KEY,
-          title TEXT,
-          created_at INTEGER DEFAULT (strftime('%s', 'now'))
-        );
-      `);
-
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS messages (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          conversation_id TEXT,
-          role TEXT,
-          content TEXT,
-          timestamp INTEGER DEFAULT (strftime('%s', 'now')),
-          FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-        );
-      `);
-
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vec USING vec0(
-          embedding float[768]
-        );
-      `);
-      
-      console.log('✅ Schema Initialization Complete.');
-    } catch (error) {
-      console.error('🔥 FATAL: Schema Migration Failed', error);
-    }
-  }
-
-  get raw() {
-    return this.db;
-  }
-}
-
-// Export a singleton instance
-export const db = new DBService().raw;
+export const db = initDatabase();

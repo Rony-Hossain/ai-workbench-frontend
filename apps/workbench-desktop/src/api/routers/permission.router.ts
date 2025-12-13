@@ -1,5 +1,6 @@
 import { router, publicProcedure, protectedProcedure } from '../trpc/init';
-import { permissions } from '../db/schema';
+// FIX: Import from the shared library, NOT '../db/schema'
+import { permissions } from '@ai-workbench/shared/database';
 import { eq, desc } from 'drizzle-orm';
 import { RequestPermissionSchema, ResolvePermissionSchema } from '@ai-workbench/bounded-contexts';
 
@@ -10,6 +11,7 @@ export const permissionRouter = router({
       .where(eq(permissions.status, 'pending'))
       .orderBy(desc(permissions.createdAt));
       
+    // Parse the JSON details field for the frontend
     return rows.map(r => ({ ...r, details: JSON.parse(r.details) }));
   }),
 
@@ -33,7 +35,7 @@ export const permissionRouter = router({
     .input(ResolvePermissionSchema)
     .mutation(async ({ ctx, input }) => {
       await ctx.db.update(permissions)
-        .set({ status: input.decision, decidedAt: Date.now() })
+        .set({ status: input.decision, decidedAt: new Date() }) // Fix: Use Date object, not Date.now() for Drizzle timestamp
         .where(eq(permissions.id, input.permissionId));
       return { success: true };
     })

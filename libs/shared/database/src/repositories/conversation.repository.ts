@@ -1,100 +1,79 @@
-import { randomUUID } from 'crypto';
-import type {
+import { eq, desc } from 'drizzle-orm';
+import { db } from '../client';
+import { conversations, type ConversationRow } from '../schema';
+import { BaseRepository } from './base.repository';
+import type { Conversation, ConversationWithMessageCount } from '@ai-workbench/bounded-contexts';
+
+export class ConversationRepository extends BaseRepository<
+  typeof conversations,
   Conversation,
-  ConversationWithMessageCount,
-} from '@ai-workbench/bounded-contexts';
-
-type ConversationRecord = Conversation & { agentIds: string[] };
-
-const conversations = new Map<string, ConversationRecord>();
-
-export class ConversationRepository {
-  async findAll(): Promise<Conversation[]> {
-    return Array.from(conversations.values());
+  ConversationRow
+> {
+  constructor() {
+    super(conversations);
   }
 
-  async findRecent(limit = 50): Promise<ConversationWithMessageCount[]> {
-    return Array.from(conversations.values())
-      .slice(0, limit)
-      .map((c) => ({ ...c, messageCount: 0 }));
-  }
-
-  async findById(id: string): Promise<Conversation | undefined> {
-    return conversations.get(id);
-  }
-
-  async getStatistics(_id: string) {
+  // 1. Map DB Row -> Domain Object
+  // Drizzle automatically parses 'agent_ids' from JSON string to Array because of { mode: 'json' } in schema
+  protected toDomain(row: ConversationRow): Conversation {
     return {
-      messageCount: 0,
-      userMessages: 0,
-      assistantMessages: 0,
-      totalTokens: 0,
+      id: row.id,
+      title: row.title,
+      workspacePath: row.workspacePath ?? undefined,
+      agentIds: row.agentIds ?? [], 
+      metadata: row.metadata ?? undefined,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
+  }
+
+  // 2. Map Domain Object -> DB Row
+  protected toDatabase(domain: Partial<Conversation>): Partial<ConversationRow> {
+    return {
+      id: domain.id,
+      title: domain.title,
+      workspacePath: domain.workspacePath ?? null,
+      agentIds: domain.agentIds ?? [],
+      metadata: domain.metadata ?? null,
+    };
+  }
+
+  // 3. Specific Queries
+  async findRecent(limit = 50): Promise<ConversationWithMessageCount[]> {
+    const rows = await db
+      .select()
+      .from(conversations)
+      .orderBy(desc(conversations.updatedAt))
+      .limit(limit);
+      
+    // TODO: You can add a 'leftJoin' with messages table here later to get real counts
+    return rows.map(r => ({ ...this.toDomain(r), messageCount: 0 }));
   }
 
   async findByAgent(agentId: string): Promise<Conversation[]> {
-    return Array.from(conversations.values()).filter((c) =>
-      c.agentIds.includes(agentId)
-    );
-  }
-
-  async create(input: {
-    title: string;
-    agentIds?: string[];
-    metadata?: Record<string, any>;
-  }): Promise<Conversation> {
-    const id = randomUUID();
-    const now = new Date();
-    const conversation: ConversationRecord = {
-      id,
-      title: input.title,
-      agentIds: input.agentIds || [],
-      metadata: input.metadata,
-      createdAt: now,
-      updatedAt: now,
-    };
-    conversations.set(id, conversation);
-    return conversation;
-  }
-
-  async exists(id: string): Promise<boolean> {
-    return conversations.has(id);
-  }
-
-  async update(
-    id: string,
-    data: Partial<Conversation>
-  ): Promise<Conversation | undefined> {
-    const existing = conversations.get(id);
-    if (!existing) return undefined;
-    const updated: ConversationRecord = {
-      ...existing,
-      ...data,
-      updatedAt: new Date(),
-    };
-    conversations.set(id, updated);
-    return updated;
+    // SQLite doesn't have an efficient "array_contains" operator like Postgres.
+    // For local desktop apps, fetching all and filtering in JS is fast enough for <10k chats.
+    // Alternatively, use a LIKE query: like(conversations.agentIds, `%${agentId}%`)
+    const all = await this.findAll();
+    return all.filter(c => c.agentIds.includes(agentId));
   }
 
   async addAgent(conversationId: string, agentId: string) {
-    const existing = conversations.get(conversationId);
-    if (!existing) return undefined;
-    if (!existing.agentIds.includes(agentId)) {
-      existing.agentIds.push(agentId);
+    const convo = await this.findById(conversationId);
+    if (!convo) return undefined;
+    
+    if (!convo.agentIds.includes(agentId)) {
+      const newAgents = [...convo.agentIds, agentId];
+      return this.update(conversationId, { agentIds: newAgents });
     }
-    existing.updatedAt = new Date();
-    return existing;
+    return convo;
   }
 
   async removeAgent(conversationId: string, agentId: string) {
-    const existing = conversations.get(conversationId);
-    if (!existing) return undefined;
-    existing.agentIds = existing.agentIds.filter((id) => id !== agentId);
-    existing.updatedAt = new Date();
-    return existing;
-  }
-
-  async delete(id: string): Promise<boolean> {
-    return conversations.delete(id);
+    const convo = await this.findById(conversationId);
+    if (!convo) return undefined;
+    
+    const newAgents = convo.agentIds.filter(id => id !== agentId);
+    return this.update(conversationId, { agentIds: newAgents });
   }
 }

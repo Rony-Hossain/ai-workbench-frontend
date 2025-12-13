@@ -1,11 +1,9 @@
 import { z } from 'zod';
 import { fileSystemApi } from '@ai-workbench/feature-files';
 import { gbnfGenerator } from '@ai-workbench/shared/ai-engine';
-import { chatDb, db } from '@ai-workbench/shared/database/client';
-import { roleMappings } from '@ai-workbench/shared/database';
+import { chatDb } from '@ai-workbench/shared/database/client';
 import { getLLMProvider } from '@ai-workbench/shared/llm-provider';
 import { workbenchStore } from '@ai-workbench/state-workbench';
-import { eq, and } from 'drizzle-orm';
 
 const AgentActionSchema = z.object({
   thought: z.string(),
@@ -43,16 +41,11 @@ export const agentService = {
     let providerId = profile.activeProvider || 'openai';
     let modelName = profile.config?.[providerId]?.model || 'gpt-4o';
 
-    const mappingRows = await db
-      .select()
-      .from(roleMappings)
-      .where(and(eq(roleMappings.workspaceId, workspaceId), eq(roleMappings.role, agentId)))
-      .limit(1);
+    const currentMapping = store.roleMappings[workspaceId]?.[agentId];
 
-    const mapping = mappingRows[0];
-    if (mapping) {
-      providerId = mapping.providerId;
-      modelName = mapping.modelId;
+    if (currentMapping) {
+      providerId = currentMapping.providerId;
+      modelName = currentMapping.modelId;
       console.log(`🤖 Role [${agentId}] mapped to [${modelName}] via Provider [${providerId}]`);
     } else {
       console.warn(`⚠️ No mapping found for role [${agentId}], using default.`);

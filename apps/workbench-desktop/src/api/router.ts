@@ -7,6 +7,7 @@ import { conversationRouter } from './routers/conversation.router';
 import { messageRouter } from './routers/message.router';
 import { permissionRouter } from './routers/permission.router';
 import { terminalRouter } from './routers/terminal.router';
+import { chatRouter } from './routers/chat.router';
 
 
 /**
@@ -19,7 +20,7 @@ export const appRouter = router({
   project: projectRouter,
   task: taskRouter,
   conversation: conversationRouter,
-  message: messageRouter,
+  chat: chatRouter,
   permission: permissionRouter,
   terminal: terminalRouter,
 });

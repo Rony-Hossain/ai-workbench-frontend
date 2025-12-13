@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@ai-workbench/shared/client-api';
 import { Badge, Button } from '@ai-workbench/shared/ui';
 import { useWorkbenchStore } from '@ai-workbench/state-workbench';
@@ -12,6 +12,7 @@ type PendingChange = {
 
 export function WorkspaceRoleMapping() {
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const setRoleMappings = useWorkbenchStore((state) => state.setRoleMappings);
   const [pendingChanges, setPendingChanges] = useState<Record<string, PendingChange>>({});
 
   const { data: providers } = trpc.provider.list.useQuery();
@@ -49,6 +50,12 @@ export function WorkspaceRoleMapping() {
     setPendingChanges({});
     await refetch();
   };
+
+  useEffect(() => {
+    if (activeWorkspaceId && mappings) {
+      setRoleMappings(activeWorkspaceId, mappings);
+    }
+  }, [activeWorkspaceId, mappings, setRoleMappings]);
 
   if (!activeWorkspaceId) {
     return <div className="p-8 text-center text-neutral-500">Select a workspace to configure roles.</div>;

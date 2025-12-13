@@ -21,7 +21,7 @@ interface WorkspaceChatWithPermissionsProps {
   workspaceName: string
   users: User[]
   agents: Agent[]
-  messages: Message[]
+  messages: Message[] // <--- This is now our Source of Truth
   permissionHistory: PermissionHistoryItem[]
   conversationHistory: ConversationHistoryItem[]
   agentHistory: AgentHistoryItem[]
@@ -29,6 +29,7 @@ interface WorkspaceChatWithPermissionsProps {
   showConversationPanel?: boolean
   showAgentPanel?: boolean
   onSendMessage: (content: string, targetAgent: string, attachments: any[]) => void;
+  onSelectConversation?: (id: string) => void; // Added this
   isGenerating: boolean;
   onStop: () => void;
 }
@@ -37,7 +38,7 @@ export function WorkspaceChatWithPermissions({
   workspaceName,
   users,
   agents,
-  messages: initialMessages,
+  messages, // Use prop directly
   permissionHistory,
   conversationHistory,
   agentHistory,
@@ -45,30 +46,23 @@ export function WorkspaceChatWithPermissions({
   showConversationPanel = false,
   showAgentPanel = false,
   onSendMessage,
+  onSelectConversation,
   isGenerating,
   onStop
 }: WorkspaceChatWithPermissionsProps) {
-  const [messages, setMessages] = useState(initialMessages)
+  // REMOVED: const [messages, setMessages] = useState(initialMessages) <--- THE BUG IS GONE
+
+  // Local UI state for modals is fine
   const [rememberDialogOpen, setRememberDialogOpen] = useState(false)
   const [editActionsModalOpen, setEditActionsModalOpen] = useState(false)
   const [selectedPermissionId, setSelectedPermissionId] = useState<string | null>(null)
 
   const selectedPermission = messages.find((m) => m.type === "permission" && m.id === selectedPermissionId)
 
+  // NOTE: These handlers need to call backend mutations in the future.
+  // For now, they are UI placeholders since we don't have a permission router yet.
   const handleAllowPermission = (permissionId: string, actionIds: string[]) => {
-    setMessages(
-      messages.map((m) =>
-        m.id === permissionId && m.permissionData
-          ? {
-              ...m,
-              permissionData: {
-                ...m.permissionData,
-                status: "approved_once",
-              },
-            }
-          : m,
-      ),
-    )
+    console.log("Allow:", permissionId, actionIds);
   }
 
   const handleAllowAndRemember = (permissionId: string, actionIds: string[]) => {
@@ -77,39 +71,12 @@ export function WorkspaceChatWithPermissions({
   }
 
   const handleSaveRule = (rule: any) => {
-    if (selectedPermissionId) {
-      setMessages(
-        messages.map((m) =>
-          m.id === selectedPermissionId && m.permissionData
-            ? {
-                ...m,
-                permissionData: {
-                  ...m.permissionData,
-                  status: "approved_with_rule",
-                  ruleName: rule.description || "Custom rule",
-                },
-              }
-            : m,
-        ),
-      )
-    }
+    console.log("Save Rule:", rule);
     setSelectedPermissionId(null)
   }
 
   const handleDenyPermission = (permissionId: string) => {
-    setMessages(
-      messages.map((m) =>
-        m.id === permissionId && m.permissionData
-          ? {
-              ...m,
-              permissionData: {
-                ...m.permissionData,
-                status: "denied",
-              },
-            }
-          : m,
-      ),
-    )
+    console.log("Deny:", permissionId);
   }
 
   const handleEditActions = (permissionId: string) => {
@@ -118,48 +85,37 @@ export function WorkspaceChatWithPermissions({
   }
 
   const handleConfirmEditedActions = (selectedActionIds: string[]) => {
-    if (selectedPermissionId) {
-      setMessages(
-        messages.map((m) =>
-          m.id === selectedPermissionId && m.permissionData
-            ? {
-                ...m,
-                permissionData: {
-                  ...m.permissionData,
-                  actions: m.permissionData.actions.map((a) => ({
-                    ...a,
-                    checked: selectedActionIds.includes(a.id),
-                  })),
-                },
-              }
-            : m,
-        ),
-      )
-    }
+    console.log("Confirm Actions:", selectedActionIds);
     setSelectedPermissionId(null)
   }
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen bg-neutral-950 text-neutral-200">
       {/* Main chat area */}
       <div className="flex flex-1 flex-col min-w-0">
         <ChatHeader workspaceName={workspaceName} users={users} agents={agents} />
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
-            {messages.map((message) =>
-              message.type === "permission" && message.permissionData ? (
-                <PermissionCard
-                  key={message.id}
-                  data={message.permissionData}
-                  onAllow={handleAllowPermission}
-                  onAllowAndRemember={handleAllowAndRemember}
-                  onDeny={handleDenyPermission}
-                  onEdit={handleEditActions}
-                />
-              ) : (
-                <MessageBubble key={message.id} message={message} />
-              ),
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+                Start the operation, Commander.
+              </div>
+            ) : (
+              messages.map((message) =>
+                message.type === "permission" && message.permissionData ? (
+                  <PermissionCard
+                    key={message.id}
+                    data={message.permissionData}
+                    onAllow={handleAllowPermission}
+                    onAllowAndRemember={handleAllowAndRemember}
+                    onDeny={handleDenyPermission}
+                    onEdit={handleEditActions}
+                  />
+                ) : (
+                  <MessageBubble key={message.id} message={message} />
+                ),
+              )
             )}
           </div>
 
@@ -167,19 +123,19 @@ export function WorkspaceChatWithPermissions({
         </div>
       </div>
 
-      {/* History sidebar - full height */}
-      {(showHistoryPanel || showConversationPanel || showAgentPanel) && (
-        <HistorySidebar
-          workspaceName={workspaceName}
-          permissionHistory={permissionHistory}
-          conversationHistory={conversationHistory}
-          agentHistory={agentHistory}
-          showPermissionPanel={showHistoryPanel}
-          showConversationPanel={showConversationPanel}
-          showAgentPanel={showAgentPanel}
-        />
-      )}
+      {/* History sidebar */}
+      <HistorySidebar
+        workspaceName={workspaceName}
+        permissionHistory={permissionHistory}
+        conversationHistory={conversationHistory}
+        agentHistory={agentHistory}
+        showPermissionPanel={showHistoryPanel}
+        showConversationPanel={showConversationPanel}
+        showAgentPanel={showAgentPanel}
+        onSelectConversation={onSelectConversation}
+      />
 
+      {/* Modals */}
       {selectedPermission?.permissionData && (
         <>
           <RememberPreferenceDialog

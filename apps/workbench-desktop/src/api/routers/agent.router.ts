@@ -1,155 +1,187 @@
 import { router, publicProcedure, protectedProcedure } from '../trpc/init';
-import { AgentRepository, ProviderRepository } from '@ai-workbench-frontend/database';
-import { AppError } from '@ai-workbench-frontend/trpc-server';
+import { AppError } from '@ai-workbench/shared/trpc-server';
 import {
   createAgentDto,
-  updateAgentDto,
   filterAgentsDto,
   type Agent,
-  type AgentWithProvider,
-} from '@ai-workbench-frontend/bounded-contexts';
+} from '@ai-workbench/bounded-contexts';
+import { agents, providers } from '@ai-workbench/shared/database';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import * as crypto from 'crypto';
 
 export const agentRouter = router({
-  /**
-   * List all agents with optional filters
-   */
+  // 1. LIST
   list: publicProcedure
     .input(filterAgentsDto.optional())
     .output(z.array(z.custom<Agent>()))
     .query(async ({ ctx, input }) => {
-      const repo = new AgentRepository();
+      let query = ctx.db.select().from(agents);
 
       if (input?.role) {
-        return repo.findByRole(input.role);
+        // @ts-ignore
+        query = query.where(eq(agents.role, input.role));
       }
-
       if (input?.isActive !== undefined) {
-        return input.isActive ? repo.findActive() : repo.findAll();
+        // @ts-ignore
+        query = query.where(eq(agents.isActive, input.isActive));
       }
 
-      return repo.findAll();
+      const rows = await query;
+
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        role: row.role as Agent['role'],
+        modelId: row.modelId,
+        systemPrompt: row.systemPrompt,
+        temperature: row.temperature,
+        maxTokens: row.maxTokens ?? undefined,
+        tools: row.tools,
+        metadata: row.metadata ?? undefined,
+        isActive: row.isActive,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      }));
     }),
 
-  /**
-   * Get agent by ID
-   */
-  getById: publicProcedure
-    .input(z.object({ id: z.string().uuid() }))
-    .output(z.custom<Agent>())
-    .query(async ({ ctx, input }) => {
-      const repo = new AgentRepository();
-      const agent = await repo.findById(input.id);
-
-      if (!agent) {
-        throw AppError.notFound(`Agent with ID ${input.id} not found`);
-      }
-
-      return agent;
-    }),
-
-  /**
-   * Get agent with provider info
-   */
-  getWithProvider: publicProcedure
-    .input(z.object({ id: z.string().uuid() }))
-    .output(z.custom<AgentWithProvider>())
-    .query(async ({ ctx, input }) => {
-      const repo = new AgentRepository();
-      const agent = await repo.findWithProvider(input.id);
-
-      if (!agent) {
-        throw AppError.notFound(`Agent with ID ${input.id} not found`);
-      }
-
-      return agent;
-    }),
-
-  /**
-   * Create new agent
-   */
+  // 2. CREATE
   create: protectedProcedure
     .input(createAgentDto)
     .output(z.custom<Agent>())
     .mutation(async ({ ctx, input }) => {
-      const agentRepo = new AgentRepository();
-      const providerRepo = new ProviderRepository();
+      // Validate Provider
+      const providerExists = await ctx.db
+        .select()
+        .from(providers)
+        .where(eq(providers.id, input.modelId))
+        .limit(1);
 
-      // Verify provider exists
-      const providerExists = await providerRepo.exists(input.modelId);
-      if (!providerExists) {
+      if (!providerExists.length) {
         throw AppError.badRequest(`Provider with ID ${input.modelId} does not exist`);
       }
 
-      return agentRepo.create(input);
+      const newId = crypto.randomUUID();
+      const newAgent = {
+        id: newId,
+        name: input.name,
+        role: input.role as any,
+        modelId: input.modelId,
+        systemPrompt: input.systemPrompt,
+        temperature: input.temperature ?? 0.7,
+        maxTokens: input.maxTokens ?? null,
+        tools: input.tools ?? [],
+        metadata: input.metadata ?? null,
+        isActive: input.isActive ?? true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      await ctx.db.insert(agents).values(newAgent);
+      return newAgent;
     }),
 
-  /**
-   * Update agent
-   */
+  // 3. UPDATE (THIS WAS MISSING)
   update: protectedProcedure
-    .input(z.object({
-      id: z.string().uuid(),
-      data: updateAgentDto,
-    }))
-    .output(z.custom<Agent>())
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        data: z.object({
+          name: z.string().optional(),
+          role: z.string().optional(),
+          modelId: z.string().optional(),
+          systemPrompt: z.string().optional(),
+          temperature: z.number().optional(),
+          isActive: z.boolean().optional(),
+        }),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
-      const agentRepo = new AgentRepository();
+      // Check if agent exists
+      const existing = await ctx.db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, input.id))
+        .limit(1);
 
-      // Verify exists
-      const exists = await agentRepo.exists(input.id);
-      if (!exists) {
+      if (!existing.length) {
+        throw AppError.notFound(`Agent ${input.id} not found`);
+      }
+
+      // Perform Update
+      await ctx.db
+        .update(agents)
+        .set({
+          ...input.data,
+          role: input.data.role as any, // Cast string to enum if needed
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, input.id));
+
+      return { success: true, id: input.id };
+    }),
+
+  // 4. GET BY ID
+  getById: publicProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .output(z.custom<Agent>())
+    .query(async ({ ctx, input }) => {
+      const result = await ctx.db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, input.id))
+        .limit(1);
+
+      if (!result[0]) {
         throw AppError.notFound(`Agent with ID ${input.id} not found`);
       }
 
-      // If updating modelId, verify new provider exists
-      if (input.data.modelId) {
-        const providerRepo = new ProviderRepository();
-        const providerExists = await providerRepo.exists(input.data.modelId);
-        if (!providerExists) {
-          throw AppError.badRequest(`Provider with ID ${input.data.modelId} does not exist`);
-        }
-      }
-
-      const updated = await agentRepo.update(input.id, input.data);
-      if (!updated) {
-        throw AppError.internal('Failed to update agent');
-      }
-
-      return updated;
+      const row = result[0];
+      return {
+        id: row.id,
+        name: row.name,
+        role: row.role as Agent['role'],
+        modelId: row.modelId,
+        systemPrompt: row.systemPrompt,
+        temperature: row.temperature,
+        tools: row.tools,
+        isActive: row.isActive,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
     }),
 
-  /**
-   * Toggle agent active status
-   */
+  // 5. TOGGLE ACTIVE
   toggleActive: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .output(z.object({ success: z.boolean(), isActive: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      const repo = new AgentRepository();
+      const agent = await ctx.db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, input.id))
+        .limit(1);
 
-      const updated = await repo.toggleActive(input.id);
-      if (!updated) {
+      if (!agent[0]) {
         throw AppError.notFound(`Agent with ID ${input.id} not found`);
       }
 
-      return { success: true, isActive: updated.isActive };
+      const newState = !agent[0].isActive;
+
+      await ctx.db
+        .update(agents)
+        .set({ isActive: newState, updatedAt: new Date() })
+        .where(eq(agents.id, input.id));
+
+      return { success: true, isActive: newState };
     }),
 
-  /**
-   * Delete agent
-   */
+  // 6. DELETE
   delete: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .output(z.object({ success: z.boolean(), deletedId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const repo = new AgentRepository();
-
-      const deleted = await repo.delete(input.id);
-      if (!deleted) {
-        throw AppError.notFound(`Agent with ID ${input.id} not found`);
-      }
-
+      await ctx.db.delete(agents).where(eq(agents.id, input.id));
       return { success: true, deletedId: input.id };
     }),
 });

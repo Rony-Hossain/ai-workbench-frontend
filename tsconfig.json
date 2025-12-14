@@ -83,6 +83,9 @@
     },
     {
       "path": "./libs/shared/trpc-server"
+    },
+    {
+      "path": "./libs/rag-core"
     }
   ]
 }

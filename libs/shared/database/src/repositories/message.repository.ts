@@ -19,7 +19,7 @@ export class MessageRepository extends BaseRepository<
       conversationId: row.conversationId,
       role: row.role as Message['role'], // Type cast safe due to schema enum enforcement (if used)
       content: row.content,
-      metadata: row.metadata ?? undefined,
+      metadata: row.metadata ?? { senderType: 'system' },
       timestamp: row.timestamp,
     };
   }
@@ -30,7 +30,7 @@ export class MessageRepository extends BaseRepository<
       conversationId: domain.conversationId,
       role: domain.role,
       content: domain.content,
-      metadata: domain.metadata ?? null,
+      metadata: domain.metadata ?? { senderType: 'system' },
       timestamp: domain.timestamp,
     };
   }

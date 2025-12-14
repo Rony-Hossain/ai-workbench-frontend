@@ -27,3 +27,5 @@ export * from './conversation/conversation.dto';
 // Message
 export * from './message/message.types';
 export * from './message/message.dto';
+
+export * from './protocol/agent-protocol.schema';

@@ -5,7 +5,10 @@ export const conversations = sqliteTable('conversations', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   title: text('title').notNull(),
   workspacePath: text('workspace_path'),
-  agentIds: text('agent_ids', { mode: 'json' }).$type<string[]>().default('[]'),
+  agentIds: text('agent_ids', { mode: 'json' })
+    .$type<string[]>()
+    .notNull()
+    .default([]),
   metadata: text('metadata', { mode: 'json' }).$type<Record<string, any>>(),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

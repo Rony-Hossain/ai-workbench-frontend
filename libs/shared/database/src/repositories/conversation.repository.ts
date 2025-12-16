@@ -20,6 +20,7 @@ export class ConversationRepository extends BaseRepository<
       id: row.id,
       title: row.title,
       workspacePath: row.workspacePath ?? undefined,
+      workspaceRoot: row.workspaceRoot ?? undefined,
       agentIds: row.agentIds ?? [], 
       metadata: row.metadata ?? undefined,
       createdAt: row.createdAt,
@@ -33,6 +34,7 @@ export class ConversationRepository extends BaseRepository<
       id: domain.id,
       title: domain.title,
       workspacePath: domain.workspacePath ?? null,
+      workspaceRoot: domain.workspaceRoot ?? null,
       agentIds: domain.agentIds ?? [],
       metadata: domain.metadata ?? null,
     };

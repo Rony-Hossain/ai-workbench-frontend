@@ -86,6 +86,9 @@
     },
     {
       "path": "./libs/rag-core"
+    },
+    {
+      "path": "./libs/rag-fs-ingest"
     }
   ]
 }

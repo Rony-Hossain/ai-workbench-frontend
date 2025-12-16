@@ -28,7 +28,7 @@ export const ChatPane: React.FC = () => {
 
   // --- 2. MUTATIONS ---
 
-  const createConvMutation = trpc.chat.createConversation.useMutation({
+  const createConvMutation = trpc.conversation.create.useMutation({
     onSuccess: () => utils.conversation.list.invalidate()
   });
   

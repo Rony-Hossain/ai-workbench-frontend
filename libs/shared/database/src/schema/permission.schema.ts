@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
-import { tasks } from './task.schema';
+import { tasks } from './project.schema';
 import { conversations } from './conversation.schema';
 import { agents } from './agent.schema';
 import * as crypto from 'crypto'; // FIX: A1 Import crypto

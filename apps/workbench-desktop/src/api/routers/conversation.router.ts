@@ -38,7 +38,7 @@ export const conversationRouter = router({
       await ctx.db.insert(conversations).values({
         id,
         title: input.title || 'New Conversation',
-        agentIds: '[]', // Default empty JSON array
+        agentIds: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       });

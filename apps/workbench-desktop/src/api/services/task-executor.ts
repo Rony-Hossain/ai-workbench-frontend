@@ -1,15 +1,12 @@
-import { db as rawDb } from '../database';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import * as schema from '@ai-workbench/shared/database';
-import { messages } from '@ai-workbench/shared/database';
+import { rawDb as sqliteDb, db } from '../database';
+import { agents, messages, providers } from '@ai-workbench/shared/database';
 import { AgentProtocolSchema, type AgentProtocol } from '@ai-workbench/bounded-contexts';
 import { gbnfGenerator } from '@ai-workbench/shared/ai-engine';
 import type { MessageMetadata } from '@ai-workbench/bounded-contexts';
+import { eq } from 'drizzle-orm';
 import axios from 'axios';
 import * as crypto from 'crypto';
-
-// Initialize local Drizzle wrapper for type-safe writes
-const db = drizzle(rawDb, { schema });
+import { buildPlannerRagInjection } from '../rag/planner-rag-context';
 
 export interface ExecutionResult {
   protocol: AgentProtocol;
@@ -49,20 +46,23 @@ export class TaskExecutor {
     signal?: AbortSignal
   ): Promise<ExecutionResult | null> {
     const startTime = Date.now();
+    console.log('[TaskExecutor] start', { agentId: this.agentId, conversationId: this.conversationId, taskId });
 
     // 1) Fetch Agent & Provider (sync read)
-    const agent = rawDb.prepare('SELECT * FROM agents WHERE id = ?').get(this.agentId) as any;
-    const provider = agent
-      ? (rawDb.prepare('SELECT * FROM providers WHERE id = ?').get(agent.modelId) as any)
+    const agent = db.select().from(agents).where(eq(agents.id, this.agentId)).get();
+    const modelId = (agent as any)?.modelId ?? (agent as any)?.model_id;
+    const provider = modelId
+      ? db.select().from(providers).where(eq(providers.id, modelId)).get()
       : null;
 
     if (!provider?.endpoint) {
+      console.error('[TaskExecutor] provider missing/offline', { agentId: this.agentId, modelId: agent?.modelId });
       await this.writeSystemError('Provider not found or offline', taskId, traceId, 0);
       return null;
     }
 
     // 2) Build context (Patch 3: scoped injection)
-    const historyRows = rawDb
+    const historyRows = sqliteDb
       .prepare(
         `
         SELECT role, content, metadata
@@ -96,16 +96,57 @@ export class TaskExecutor {
       };
     });
 
-    // 3) Payload
-    const systemPrompt = `${agent.systemPrompt}\nCRITICAL: Output valid JSON matching the schema provided.`;
+    // --- PHASE 5: RAG AUGMENTATION (Planner Only) ---
+    let ragSystemInjection = '';
 
-    const payload = {
-      model: provider.models?.[0]?.id || 'default',
+    if (agent?.role === 'planner') {
+      const convo = sqliteDb
+        .prepare('SELECT workspace_root as workspaceRoot, workspace_path as workspacePath FROM conversations WHERE id = ?')
+        .get(this.conversationId) as { workspaceRoot?: string; workspacePath?: string } | undefined;
+
+      const workspaceRoot = convo?.workspaceRoot ?? convo?.workspacePath;
+
+      if (workspaceRoot) {
+        try {
+          ragSystemInjection = await buildPlannerRagInjection({
+            rawDb: sqliteDb,
+            conversationId: this.conversationId,
+            query: userContent,
+            workspaceRootAbsPath: workspaceRoot,
+            topK: 10,
+            maxChars: 10_000,
+          });
+          console.log('[TaskExecutor] planner RAG injected', { conversationId: this.conversationId });
+        } catch (e) {
+          console.error('[RAG] planner injection failed:', e);
+        }
+      }
+    }
+
+    // 3) Payload
+    const systemPrompt = `${agent.systemPrompt}${ragSystemInjection}\nCRITICAL: Output valid JSON matching the schema provided.`;
+
+    // Providers may not list models; try reasonable fallbacks
+    const modelFromProvider =
+      (provider as any)?.models?.[0]?.id ??
+      (provider as any)?.models?.[0]?.name ??
+      (provider as any)?.metadata?.defaultModel ??
+      provider?.name ??
+      provider?.id ??
+      'phi-3';
+
+    const supportsGrammar = (provider as any)?.metadata?.supportsGrammar === true;
+
+    const payload: any = {
+      model: modelFromProvider,
       messages: [{ role: 'system', content: systemPrompt }, ...formattedHistory, { role: 'user', content: userContent }],
-      grammar: this.grammar,
-      temperature: 0.1,
+      temperature: agent?.temperature ?? 0.1,
       stream: false
     };
+
+    if (supportsGrammar) {
+      payload.grammar = this.grammar;
+    }
 
     try {
       console.log(`🧠 [Executor] Sending to ${provider.endpoint}...`);
@@ -113,25 +154,37 @@ export class TaskExecutor {
       const res = await axios.post(`${provider.endpoint}/chat/completions`, payload, { signal });
 
       const rawContent = res.data?.choices?.[0]?.message?.content ?? '{}';
+      const extractJson = (text: string) => {
+        const trimmed = (text || '').trim();
+        if (trimmed.startsWith('```')) {
+          return trimmed
+            .replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '')
+            .replace(/```$/, '')
+            .trim();
+        }
+        return trimmed;
+      };
+      const cleanedContent = extractJson(rawContent);
 
       // 4) Validate & parse
       let protocolData: AgentProtocol;
       try {
-        const json = JSON.parse(rawContent);
+        const json = JSON.parse(cleanedContent);
         protocolData = AgentProtocolSchema.parse(json);
       } catch (validationError: any) {
-        console.error('Protocol Violation:', rawContent);
-        await this.writeSystemError(
-          `Invalid Protocol: ${validationError?.message ?? 'Unknown schema error'}`,
-          taskId,
-          traceId,
-          Date.now() - startTime
-        );
-        return null;
+        console.error('Protocol Violation:', { rawContent, cleanedContent, error: validationError?.message });
+        // Fallback: wrap raw content as a final_answer so the task can complete
+        protocolData = {
+          protocolVersion: 1,
+          tool: 'final_answer',
+          thought: 'Fallback: provider returned non-protocol JSON',
+          parameters: { content: cleanedContent || rawContent || 'No content' },
+        };
       }
 
       // 5) Success write
       const messageId = await this.writeAgentResponse(agent, protocolData, taskId, traceId, Date.now() - startTime);
+      console.log('[TaskExecutor] success', { taskId, messageId, tool: protocolData.tool });
       return { protocol: protocolData, messageId };
     } catch (e: any) {
       // Robust abort detection
@@ -147,6 +200,9 @@ export class TaskExecutor {
       }
 
       const msg = e?.message || 'Unknown Network Error';
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      console.error('[Executor] request failed', { taskId, error: msg, status, data });
       await this.writeSystemError(`Execution Error: ${msg}`, taskId, traceId, Date.now() - startTime);
       return null;
     }

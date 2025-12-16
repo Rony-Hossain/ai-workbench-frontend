@@ -25,7 +25,9 @@
       "@ai-workbench-frontend/bounded-contexts": ["libs/shared/bounded-contexts/src/index.ts"],
       "@ai-workbench-frontend/database": ["libs/shared/database/src/index.ts"],
       "@ai-workbench/feature-settings": ["libs/feature-settings/src/index.ts"],
-      "@ai-workbench/feature-ai-provider-hub": ["libs/feature-ai-provider-hub/src/index.ts"]
+      "@ai-workbench/feature-ai-provider-hub": ["libs/feature-ai-provider-hub/src/index.ts"],
+      "@ai-workbench/rag-core": ["libs/rag-core/src/index.ts"],
+      "@ai-workbench/rag-fs-ingest": ["libs/rag-fs-ingest/src/index.ts"]
     }
   }
 }

@@ -84,10 +84,13 @@ export function AddProviderWizard({ onComplete, onCancel }: WizardProps) {
     if (step === 0) {
       return !!state.providerType;
     }
-    if (state.providerType === 'cloud') {
-      return Boolean(state.label && state.apiKey);
+    if (step === 1) {
+      if (state.providerType === 'cloud') {
+        return Boolean(state.label && state.apiKey && state.selectedModels.length > 0);
+      }
+      return Boolean(state.label && state.endpoint && state.selectedModels.length > 0);
     }
-    return Boolean(state.label && state.endpoint);
+    return false; // Should not be reached if only 2 steps
   };
 
   return (

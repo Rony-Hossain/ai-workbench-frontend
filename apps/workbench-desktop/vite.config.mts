@@ -126,7 +126,7 @@ export default defineConfig({
         __dirname,
         '../../libs/shared/utils/src/index.ts'
       ),
-       '@ai-workbench/feature-ai-provider-hub': path.resolve(
+      '@ai-workbench/feature-ai-provider-hub': path.resolve(
         __dirname,
         '../../libs/feature-ai-provider-hub/src/index.ts'
       ),
@@ -158,6 +158,16 @@ export default defineConfig({
         __dirname,
         '../../libs/feature-agents/src/index.ts'
       ),
+
+      '@ai-workbench/rag-core': path.resolve(
+        __dirname,
+        '../../libs/rag-core/src/index.ts'
+      ),
+      '@ai-workbench/rag-fs-ingest': path.resolve(
+        __dirname,
+        '../../libs/rag-fs-ingest/src/index.ts'
+      ),
+
       '@ai-workbench/feature-chat': path.resolve(
         __dirname,
         '../../libs/feature-chat/src/index.ts'

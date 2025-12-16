@@ -9,6 +9,7 @@ import { createIPCHandler } from 'electron-trpc/main';
 import { appRouter } from './router';
 import type { TerminalSession as ClientTerminalSession } from '@ai-workbench/feature-terminal';
 import { createContext } from './trpc/context';
+import { TaskRunner } from './services/task-runner';
 
 // -----------------------------------------------------------------------------
 // CRITICAL FIX: LINUX / WSL2 RENDERING FLAGS
@@ -340,6 +341,7 @@ function createWindow(): void {
   terminalManager = new DistributedTerminalManager(mainWindow);
 
   createIPCHandler({ router: appRouter, windows: [mainWindow], createContext });
+  TaskRunner.getInstance().start();
 
   ipcMain.handle('files:read-dir', async (_, dirPath?: string) => {
     if (!dirPath) {
